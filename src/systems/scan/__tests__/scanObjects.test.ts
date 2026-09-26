@@ -73,3 +73,27 @@ describe('a scanned piece is sized by MEASUREMENT, not by the catalogue', () => 
     expect(placedName(orphan)).toBe('no-such-item');
   });
 });
+
+describe('re-applying geometry does not eat hand-placed furniture', () => {
+  it('keeps catalogue pieces and replaces only the scanned ones', async () => {
+    const { useConfiguratorStore } = await import('@/state/useConfiguratorStore');
+    const store = useConfiguratorStore.getState();
+
+    // Someone places a sofa by hand…
+    store.addFurniture('sofa_3seat');
+    expect(useConfiguratorStore.getState().designItems).toHaveLength(1);
+
+    // …then applies a scan carrying two objects.
+    useConfiguratorStore.getState().applyRoomGeometry(scanToGeometry(scan));
+    let items = useConfiguratorStore.getState().designItems;
+    expect(items.filter((i) => !i.scanned)).toHaveLength(1);
+    expect(items.filter((i) => i.scanned)).toHaveLength(2);
+
+    // …then just re-applies plain dimensions, which carry no objects at all.
+    // This used to wipe the list, sofa included.
+    useConfiguratorStore.getState().applyRoomGeometry(scanToGeometry({ ...scan, objects: [] }));
+    items = useConfiguratorStore.getState().designItems;
+    expect(items.filter((i) => !i.scanned), 'the hand-placed sofa survives').toHaveLength(1);
+    expect(items.filter((i) => i.scanned), 'the old scanned pieces are gone').toHaveLength(0);
+  });
+});

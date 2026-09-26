@@ -72,30 +72,21 @@ enum FloorplanBuilder {
         return (mm(p0), mm(p1))
     }
 
-    /// Greedy nearest-endpoint chaining of wall segments into a closed loop.
+    /// Wall surfaces → an ordered closed loop, with the fragments of one wall
+    /// merged and the corners snapped to where the wall LINES meet.
+    ///
+    /// This used to be unbounded greedy nearest-endpoint chaining that appended
+    /// only the FAR endpoint of each segment. Discarding the near endpoint made
+    /// every edge a chord fusing the gap between two walls with the wall itself
+    /// — which is how shoes occupying 500mm of one wall tilted that wall along
+    /// its entire length and put the far corner 150mm out. See `WallLoop.swift`
+    /// for the measurement and the reasoning; the geometry lives there because
+    /// it is pure, and its TypeScript mirror carries the tests.
     private static func orderedFloorPolygon(_ walls: [CapturedRoom.Surface]) -> [Vec2] {
-        var remaining = walls.map(segment)
-        guard let first = remaining.first else { return [] }
-        remaining.removeFirst()
-
-        var ordered = [first.a, first.b]
-        var tail = first.b
-        while !remaining.isEmpty {
-            var bestIdx = 0
-            var flip = false
-            var bestDist = Double.greatestFiniteMagnitude
-            for (i, seg) in remaining.enumerated() {
-                let da = Geo.distance(tail, seg.a)
-                let db = Geo.distance(tail, seg.b)
-                if da < bestDist { bestDist = da; bestIdx = i; flip = false }
-                if db < bestDist { bestDist = db; bestIdx = i; flip = true }
-            }
-            let seg = remaining.remove(at: bestIdx)
-            let next = flip ? seg.a : seg.b
-            ordered.append(next)
-            tail = next
-        }
-        return ordered
+        WallLoop.outline(walls.map {
+            let s = segment($0)
+            return WallLoop.Segment(a: s.a, b: s.b)
+        })
     }
 
     private static func boundingBox(_ walls: [CapturedRoom.Surface]) -> [Vec2] {

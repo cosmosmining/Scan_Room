@@ -117,6 +117,25 @@ export const SATURATED_LEVEL = 250;
  */
 export const MAX_SATURATED_FRACTION = 0.25;
 /**
+ * …but a FEATURELESS clipped block gets almost no rope. With no pin slots,
+ * rocker seam or screw heads, the only thing separating the candidate from a
+ * lamp is that it does not clip — so a fifth of a blank candidate clipping is
+ * already a light. A real sealed cover under an exposure set by the room does
+ * not clip at all.
+ */
+export const BLANK_MAX_SATURATED_FRACTION = 0.02;
+/**
+ * …and clipping alone must not convict, because a plate in a pool of sunlight
+ * or under a downlight clips too, and a flat rule deletes it. The second
+ * condition is a bound REFLECTANCE cannot break: white plastic reflects at most
+ * ~0.9 where the wall around it reflects at least ~0.5, so no reflector reads
+ * much more than ~1.7x its own wall. A luminaire with auto-exposure pulled down
+ * for it reads 2.5-7x. A sunlit plate sits in a sunlit patch, so its wall is
+ * bright too and the RATIO stays low — which is exactly why the ratio, and not
+ * the absolute level, is the discriminator.
+ */
+export const MAX_REFLECTIVE_RATIO = 2.1;
+/**
  * Most candidates worth measuring against depth in one frame. Depth measurement
  * fits a plane per candidate, so its cost is linear in candidate count, and a
  * frame yielding dozens is a frame looking at something that is not a wall of
@@ -167,6 +186,29 @@ const MIN_FEATURE_AREA = 2;
 const MAX_FEATURES = 24;
 /** Dark interior beyond this fraction is a picture frame, not a faceplate. */
 const MAX_DARK_FRACTION = 0.42;
+/**
+ * EXPOSURE INVARIANCE. Every contrast constant above counts absolute luminance
+ * levels, and luminance scales with exposure. Put a luminaire in frame and
+ * auto-exposure drops one to two stops, so the SAME socket against the SAME
+ * wall loses half its contrast and falls below thresholds it cleared a second
+ * earlier. That is why sockets disappear when a light is in shot — nothing
+ * about the socket changed.
+ *
+ * So each contrast test is judged as a difference OR a ratio, and passes on
+ * either. The relative limits are the absolute ones divided by the wall luma
+ * they were tuned at, so a normally-exposed frame behaves exactly as before and
+ * only a darkened frame gains anything: the change can add recall, never remove
+ * it.
+ */
+const EXPOSURE_REFERENCE = 150;
+/** Below this the frame carries no signal and a ratio would be amplifying noise. */
+const EXPOSURE_FLOOR = 24;
+const STRONG_CONTRAST_REL = STRONG_CONTRAST / EXPOSURE_REFERENCE;
+const BLANK_MIN_CONTRAST_REL = BLANK_MIN_CONTRAST / EXPOSURE_REFERENCE;
+/** Feature darkness scales too. Clamped so it is never looser than the absolute
+ *  rule was, and never so tight that sensor noise counts as a pin slot. */
+const DARK_FEATURE_DELTA_FLOOR = 10;
+const DARK_FEATURE_REL = DARK_FEATURE_DELTA / EXPOSURE_REFERENCE;
 
 /**
  * Luminance downscaled to `maxDim` on its longest edge.
@@ -296,6 +338,32 @@ function sweep(mask: Uint8Array, w: number, h: number, r: number, erodePass: boo
 }
 
 /** Fraction of a bounding box that is set in the mask. */
+/**
+ * Mean of the window around a candidate EXCLUDING the candidate's own box.
+ *
+ * Including it diluted every contrast measurement by the very thing being
+ * measured. For a small plate that is a rounding error; for a large luminaire
+ * it was enough to pull its own wall reference up and hide it.
+ */
+function annulusMean(
+  s: Float64Array, w: number, h: number, x: number, y: number, r: number,
+  px0: number, py0: number, px1: number, py1: number,
+): number {
+  const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r);
+  const x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
+  const W = w + 1;
+  const sum = (a: number, b: number, c: number, d: number): number =>
+    s[d * W + c] - s[b * W + c] - s[d * W + a] + s[b * W + a];
+  const outerSum = sum(x0, y0, x1, y1);
+  const outerN = (x1 - x0) * (y1 - y0);
+  const ix0 = Math.max(x0, px0), iy0 = Math.max(y0, py0);
+  const ix1 = Math.min(x1, px1), iy1 = Math.min(y1, py1);
+  const innerN = Math.max(0, ix1 - ix0) * Math.max(0, iy1 - iy0);
+  const n = outerN - innerN;
+  if (n <= 0) return outerN > 0 ? outerSum / outerN : 0;
+  return (outerSum - (innerN > 0 ? sum(ix0, iy0, ix1, iy1) : 0)) / n;
+}
+
 /** Fraction of a box whose pixels are clipped at the top of the range. */
 export function saturatedFraction(
   g: ArrayLike<number>,
@@ -507,13 +575,17 @@ export function detectSockets(img: DetectorImage, opts: DetectorOptions = {}): S
     // Contrast against the wall well beyond the plate.
     const cx = Math.round((p.minx + p.maxx) / 2);
     const cy = Math.round((p.miny + p.maxy) / 2);
-    const wallMean = boxMean(s, w, h, cx, cy, Math.max(bw, bh) * 2);
+    const wallMean = annulusMean(s, w, h, cx, cy, Math.max(bw, bh) * 2,
+      p.minx, p.miny, p.maxx + 1, p.maxy + 1);
     const contrast = plateMean - wallMean;
 
     // Emissive? Then it is a light, not a plate. Checked here, before the
     // per-candidate feature scan, because on a frame full of LED strip this is
-    // what stops the expensive work from happening at all.
-    if (saturatedFraction(g, w, p.minx, p.miny, p.maxx, p.maxy) > MAX_SATURATED_FRACTION) continue;
+    // what stops the expensive work from happening at all. Two conditions, both
+    // required: clipped, AND brighter than its own wall than any reflector can be.
+    const hot = saturatedFraction(g, w, p.minx, p.miny, p.maxx, p.maxy);
+    const overBright = plateMean / Math.max(EXPOSURE_FLOOR, wallMean);
+    if (hot > MAX_SATURATED_FRACTION && overBright > MAX_REFLECTIVE_RATIO) continue;
 
     // Confirmation, in tiers. A faceplate usually carries a few SMALL dark
     // features (slots, a ground hole, a rocker seam); one that is mostly dark
@@ -524,20 +596,34 @@ export function detectSockets(img: DetectorImage, opts: DetectorOptions = {}): S
       g, w,
       p.minx + insetX, p.miny + insetY,
       p.maxx + 1 - insetX, p.maxy + 1 - insetY,
-      plateMean - DARK_FEATURE_DELTA,
+      plateMean - Math.max(
+        DARK_FEATURE_DELTA_FLOOR,
+        Math.min(DARK_FEATURE_DELTA, DARK_FEATURE_REL * plateMean),
+      ),
     );
     if (feats.blobs > MAX_FEATURES) continue;
     if (feats.darkFraction > MAX_DARK_FRACTION) continue;
+    // Contrast judged as a difference OR a ratio, so a frame darkened by a
+    // luminaire in shot does not lose the sockets it had a second ago.
+    const exposureRef = Math.max(EXPOSURE_FLOOR, wallMean);
+    const strongEnough =
+      contrast >= STRONG_CONTRAST || contrast / exposureRef >= STRONG_CONTRAST_REL;
+    const blankEnough =
+      contrast >= BLANK_MIN_CONTRAST || contrast / exposureRef >= BLANK_MIN_CONTRAST_REL;
+
     if (feats.blobs === 0) {
+      // No features at all: the saturation rule tightens, because "it does not
+      // clip" is now the ONLY thing separating this from a lamp.
+      if (hot > BLANK_MAX_SATURATED_FRACTION && overBright > MAX_REFLECTIVE_RATIO) continue;
       // A blank SEALED cover: no features to lean on, so everything else must
       // be unmistakable. (Known cost, accepted deliberately: a plate-sized
       // featureless white rectangle — a sticky note — can box; one tap on the
       // plan removes it. Missing real sealed covers is the worse failure.)
-      if (contrast < BLANK_MIN_CONTRAST) continue;
+      if (!blankEnough) continue;
       if (solidity < BLANK_MIN_SOLIDITY) continue;
       if (aspect < BLANK_MIN_ASPECT || aspect > BLANK_MAX_ASPECT) continue;
       if (Math.max(bw, bh) > minDim * BLANK_MAX_SIDE_FRAC) continue;
-    } else if (contrast < STRONG_CONTRAST && feats.blobs < WEAK_MIN_FEATURES) {
+    } else if (!strongEnough && feats.blobs < WEAK_MIN_FEATURES) {
       // Weak brightness needs more corroboration than one dot.
       continue;
     }

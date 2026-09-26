@@ -226,12 +226,20 @@ function paintLed(img: DetectorImage, x: number, y: number, w: number, h: number
   rect(img, x, y, w, h, 255);
 }
 
+/**
+ * A wall as the camera actually records it with a luminaire in shot. Put a
+ * light in frame and auto-exposure drops a stop or two, so the wall lands far
+ * below the ~180 of an evenly lit room. This matters: the rule that separates a
+ * light from a plate is the RATIO between them, and a test that paints a
+ * clipped strip on a bright wall is painting a scene no camera produces.
+ */
+const AE_DARKENED_WALL = 70;
+
 describe('LED lighting is not a socket', () => {
   it('rejects a clipped LED panel that is otherwise plate-shaped', () => {
     // Exactly the shape the blank-sealed-cover tier accepts: solid, plate-sized,
-    // featureless, and far brighter than the wall. Only the clipping tells them
-    // apart.
-    const img = makeImage(200, 150);
+    // featureless, and far brighter than the wall.
+    const img = makeImage(200, 150, AE_DARKENED_WALL);
     paintLed(img, 84, 52, 34, 44);
     expect(detectSockets(img)).toHaveLength(0);
   });
@@ -240,8 +248,18 @@ describe('LED lighting is not a socket', () => {
     // A strip broken into plate-sized chunks by the morphological opening —
     // this is what produced 33 candidates in one frame in the field, and what
     // made the boxes appear to slide along the strip between frames.
-    const img = makeImage(320, 200);
+    const img = makeImage(320, 200, AE_DARKENED_WALL);
     for (let i = 0; i < 5; i++) paintLed(img, 30 + i * 52, 40, 36, 30);
+    expect(detectSockets(img)).toHaveLength(0);
+  });
+
+  it('rejects a luminaire that is only PARTLY clipped', () => {
+    // PWM dimming means a strip is caught mid-cycle in some frames, so it is
+    // hot in the middle and merely bright at the edges. Convicting on clipped
+    // AREA alone misses this one, which is how a strip flickers in and out.
+    const img = makeImage(200, 150, AE_DARKENED_WALL);
+    rect(img, 84, 52, 34, 44, 215);
+    rect(img, 92, 62, 18, 24, 255);
     expect(detectSockets(img)).toHaveLength(0);
   });
 
@@ -249,7 +267,7 @@ describe('LED lighting is not a socket', () => {
     // The point of the gate is to remove the lighting WITHOUT removing the
     // sockets under it; a detector that goes quiet in a lit room is no better
     // than one that cries wolf.
-    const img = makeImage(320, 200);
+    const img = makeImage(320, 200, AE_DARKENED_WALL);
     for (let i = 0; i < 4; i++) paintLed(img, 20 + i * 60, 24, 40, 18);
     paintSocket(img, 160, 130);
     const dets = detectSockets(img);
@@ -259,11 +277,24 @@ describe('LED lighting is not a socket', () => {
   });
 
   it('keeps a plate carrying a small specular hotspot', () => {
-    // A window or a lamp can clip a CORNER of a real plate. The threshold is a
-    // quarter of its face precisely so this survives.
     const img = makeImage(200, 150);
     paintSocket(img, 100, 72);
     rect(img, 88, 56, 8, 8, 255); // ~4% of a 34x44 plate
+    expect(detectSockets(img)).toHaveLength(1);
+  });
+
+  it('keeps a real plate sitting in SUNLIGHT, fully clipped', () => {
+    // The failure a clipping-only rule creates, and the reason the second
+    // condition exists. Sunlight drives a real plate to clipping — but it
+    // lights the wall around it too, so the RATIO stays inside what a reflector
+    // can reach (255/150 = 1.7, where a luminaire reads 2.5-7x) and the plate
+    // survives. Convicting on clipped AREA alone deleted this plate outright.
+    const img = makeImage(200, 150, 150);
+    const pw = 34, ph = 44;
+    rect(img, 100 - pw / 2, 72 - ph / 2, pw, ph, 255);
+    rect(img, 100 - 10, 72 - 6, 4, 10, 90);
+    rect(img, 100 + 6, 72 - 6, 4, 10, 90);
+    rect(img, 100 - 2, 72 + 9, 4, 5, 90);
     expect(detectSockets(img)).toHaveLength(1);
   });
 });

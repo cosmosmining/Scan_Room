@@ -188,20 +188,30 @@ export const createConfigurationSlice: StateCreator<
     // deletable on day one, by the machinery that already does that for the
     // catalogue. Most of this furniture is going out before the kitchen goes
     // in, so being able to remove it is not a nicety.
+    // Replace only the SCANNED pieces. An earlier version replaced the whole
+    // list, which meant every path that re-applies geometry — the plain
+    // width/depth/height Apply button included, and none of those carry
+    // objects — silently deleted every piece of furniture someone had placed by
+    // hand. The `scanned` flag exists exactly so the two can be told apart.
+    // Functional `set` so this composes with the room update above rather than
+    // racing a stale read of it.
     const objects = geometry.objects ?? [];
-    set({
-      designItems: objects.map((o, i) => ({
-        id: `scan_${i}_${o.category}`,
-        itemId: SCANNED_ITEM_ID,
-        position: { x: o.center.x, z: o.center.z },
-        // The scan's yaw is about +Y in the same frame the rest of the app uses.
-        rotationY: o.rotation,
-        size: { width: o.width, height: o.height ?? 700, depth: o.depth },
-        label: o.category,
-        scanned: true,
-      })),
+    set((s) => ({
+      designItems: [
+        ...s.designItems.filter((i) => !i.scanned),
+        ...objects.map((o, i) => ({
+          id: `scan_${i}_${o.category}`,
+          itemId: SCANNED_ITEM_ID,
+          position: { x: o.center.x, z: o.center.z },
+          // The scan's yaw is about +Y in the frame the rest of the app uses.
+          rotationY: o.rotation,
+          size: { width: o.width, height: o.height ?? 700, depth: o.depth },
+          label: o.category,
+          scanned: true,
+        })),
+      ],
       designSelection: null,
-    });
+    }));
 
     get().regenerateLayout();
   },

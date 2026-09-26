@@ -137,6 +137,23 @@ enum SocketDetector {
     /// of its face, and a plate that did would have no visible slots to confirm
     /// it anyway.
     static let maxSaturatedFraction = 0.25
+    /// …but a FEATURELESS clipped block gets almost no rope. With no pin slots,
+    /// rocker seam or screw heads, the only thing separating the candidate from
+    /// a lamp is that it does not clip — so a fiftieth of a blank candidate
+    /// clipping is already a light. A real sealed cover under an exposure set by
+    /// the room does not clip at all. This is what catches a PWM-dimmed strip
+    /// caught mid-cycle, which is only partly clipped and which a flat rule on
+    /// clipped AREA lets straight through.
+    static let blankMaxSaturatedFraction = 0.02
+    /// …and clipping alone must not convict, because a plate in sunlight or
+    /// under a downlight clips too, and a flat rule deletes it. The second
+    /// condition is a bound REFLECTANCE cannot break: white plastic reflects at
+    /// most ~0.9 where the wall around it reflects at least ~0.5, so no
+    /// reflector reads much more than ~1.7x its own wall. A luminaire with
+    /// auto-exposure pulled down for it reads 2.5-7x. A sunlit plate sits in a
+    /// sunlit patch, so its wall is bright too and the RATIO stays low — which
+    /// is exactly why the ratio, and not the absolute level, is the test.
+    static let maxReflectiveRatio = 2.1
     /// Most candidates measured against depth in one frame. Depth measurement is
     /// the expensive half of a frame, and a frame that produces dozens of
     /// candidates is a frame looking at something that is not a wall of sockets.
@@ -159,6 +176,26 @@ enum SocketDetector {
     static let minSolidity = 0.55
     /// Interior features must be clearly darker than the plate.
     static let darkFeatureDelta = 28.0
+    /// EXPOSURE INVARIANCE. Every contrast constant here counts absolute
+    /// luminance, and luminance scales with exposure. Put a luminaire in frame
+    /// and auto-exposure drops one to two stops, so the SAME socket against the
+    /// SAME wall loses half its contrast and falls below thresholds it cleared a
+    /// second earlier. That is why sockets vanish when a light is in shot —
+    /// nothing about the socket changed.
+    ///
+    /// So each contrast test is judged as a difference OR a ratio and passes on
+    /// either. The relative limits are the absolute ones divided by the wall
+    /// luma they were tuned at, so a normally-exposed frame behaves exactly as
+    /// before: the change can add recall, never remove it.
+    static let exposureReference = 150.0
+    /// Below this the frame carries no signal and a ratio amplifies noise.
+    static let exposureFloor = 24.0
+    static let strongContrastRel = strongContrast / exposureReference
+    static let blankMinContrastRel = blankMinContrast / exposureReference
+    /// Feature darkness scales too. Clamped so it is never looser than the
+    /// absolute rule was, and never so tight that sensor noise reads as a slot.
+    static let darkFeatureDeltaFloor = 10.0
+    static let darkFeatureRel = darkFeatureDelta / exposureReference
     /// Feature blobs of at least this many pixels count (screws, slots, seams).
     static let minFeatureArea = 2
     /// More dark blobs than this is printed matter or a vent, not a socket.
@@ -233,15 +270,20 @@ enum SocketDetector {
             // Contrast against the wall well beyond the plate.
             let cx = (p.minx + p.maxx) / 2
             let cy = (p.miny + p.maxy) / 2
-            let wallMean = Double(boxMean(integral, w, h, cx, cy, max(bw, bh) * 2))
+            let wallMean = Double(annulusMean(
+                integral, w, h, cx, cy, max(bw, bh) * 2,
+                p.minx, p.miny, p.maxx + 1, p.maxy + 1
+            ))
             let contrast = plateMean - wallMean
 
             // Emissive? Then it is a light, not a plate. Checked here, before
             // the per-candidate feature scan, because on a frame full of LED
             // strip this is what stops the expensive work from happening at all.
-            if saturatedFraction(g, w, p.minx, p.miny, p.maxx, p.maxy) > maxSaturatedFraction {
-                continue
-            }
+            // Two conditions, BOTH required: clipped, and brighter than its own
+            // wall than any reflector can be.
+            let hot = saturatedFraction(g, w, p.minx, p.miny, p.maxx, p.maxy)
+            let overBright = plateMean / max(exposureFloor, wallMean)
+            if hot > maxSaturatedFraction && overBright > maxReflectiveRatio { continue }
 
             // Confirmation, in tiers. A faceplate usually carries a few SMALL
             // dark features; one that is mostly dark inside is a frame or a
@@ -252,21 +294,35 @@ enum SocketDetector {
                 g, w,
                 p.minx + insetX, p.miny + insetY,
                 p.maxx + 1 - insetX, p.maxy + 1 - insetY,
-                threshold: Float(plateMean - darkFeatureDelta)
+                threshold: Float(plateMean - max(
+                    darkFeatureDeltaFloor,
+                    min(darkFeatureDelta, darkFeatureRel * plateMean)
+                ))
             )
             if feats.blobs > maxFeatures { continue }
             if feats.darkFraction > maxDarkFraction { continue }
+            // Contrast judged as a difference OR a ratio, so a frame darkened by
+            // a luminaire in shot does not lose the sockets it had a moment ago.
+            let exposureRef = max(exposureFloor, wallMean)
+            let strongEnough = contrast >= strongContrast
+                || contrast / exposureRef >= strongContrastRel
+            let blankEnough = contrast >= blankMinContrast
+                || contrast / exposureRef >= blankMinContrastRel
+
             if feats.blobs == 0 {
+                // No features at all: the saturation rule tightens, because "it
+                // does not clip" is now the ONLY thing separating this from a lamp.
+                if hot > blankMaxSaturatedFraction && overBright > maxReflectiveRatio { continue }
                 // A blank SEALED cover, or a far socket whose slots are below
                 // pixel resolution: no features to lean on, so everything else
                 // must be unmistakable. (Known cost, accepted deliberately: a
                 // plate-sized featureless white rectangle — a sticky note —
                 // can box; one tap on the plan removes it.)
-                if contrast < blankMinContrast { continue }
+                if !blankEnough { continue }
                 if solidity < blankMinSolidity { continue }
                 if aspect < blankMinAspect || aspect > blankMaxAspect { continue }
                 if Double(max(bw, bh)) > Double(minDim) * blankMaxSideFrac { continue }
-            } else if contrast < strongContrast && feats.blobs < weakMinFeatures {
+            } else if !strongEnough && feats.blobs < weakMinFeatures {
                 // Weak brightness needs more corroboration than one dot.
                 continue
             }
@@ -363,6 +419,33 @@ enum SocketDetector {
             - Int(s[y1 * stride + x0]) + Int(s[y0 * stride + x0])
         let n = (x1 - x0) * (y1 - y0)
         return n > 0 ? Float(sum) / Float(n) : 0
+    }
+
+    /// Mean of the window around a candidate EXCLUDING the candidate's own box.
+    ///
+    /// Including it diluted every contrast measurement by the very thing being
+    /// measured. For a small plate that is a rounding error; for a large
+    /// luminaire it was enough to pull its own wall reference up and hide it.
+    private static func annulusMean(
+        _ s: [Int32], _ w: Int, _ h: Int, _ x: Int, _ y: Int, _ r: Int,
+        _ px0: Int, _ py0: Int, _ px1: Int, _ py1: Int
+    ) -> Float {
+        let x0 = max(0, x - r), y0 = max(0, y - r)
+        let x1 = min(w, x + r + 1), y1 = min(h, y + r + 1)
+        let stride = w + 1
+        func sum(_ a: Int, _ b: Int, _ c: Int, _ d: Int) -> Int {
+            Int(s[d * stride + c]) - Int(s[b * stride + c])
+                - Int(s[d * stride + a]) + Int(s[b * stride + a])
+        }
+        let outerSum = sum(x0, y0, x1, y1)
+        let outerN = (x1 - x0) * (y1 - y0)
+        let ix0 = max(x0, px0), iy0 = max(y0, py0)
+        let ix1 = min(x1, px1), iy1 = min(y1, py1)
+        let innerN = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+        let n = outerN - innerN
+        guard n > 0 else { return outerN > 0 ? Float(outerSum) / Float(outerN) : 0 }
+        let innerSum = innerN > 0 ? sum(ix0, iy0, ix1, iy1) : 0
+        return Float(outerSum - innerSum) / Float(n)
     }
 
     /// Mean over a pixel rectangle [x0,x1) x [y0,y1) via the summed-area table.
