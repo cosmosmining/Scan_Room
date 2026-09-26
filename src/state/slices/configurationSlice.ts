@@ -19,6 +19,7 @@ import {
   type RunAssignment,
 } from '@/systems/layout';
 import { roomGeometryToRoom } from '@/systems/scan';
+import { SCANNED_ITEM_ID } from '@/systems/furniture/catalog';
 import type { ModuleInstance } from '@/lib/types';
 import type { ConfigurationSlice, ConfiguratorState } from '@/state/types';
 
@@ -180,6 +181,28 @@ export const createConfigurationSlice: StateCreator<
     // Land on the auto-generated floorplan so a capture flows straight into the
     // dimensioned plan (scan → floorplan), exactly like the native apps.
     set({ room: roomGeometryToRoom(geometry, get().room.name), viewMode: 'floorplan' });
+
+    // Furniture the scan saw becomes ordinary placed items, at the size it was
+    // MEASURED at. Reusing the placed-item system rather than inventing a
+    // parallel one is the whole trick: they are then draggable, selectable and
+    // deletable on day one, by the machinery that already does that for the
+    // catalogue. Most of this furniture is going out before the kitchen goes
+    // in, so being able to remove it is not a nicety.
+    const objects = geometry.objects ?? [];
+    set({
+      designItems: objects.map((o, i) => ({
+        id: `scan_${i}_${o.category}`,
+        itemId: SCANNED_ITEM_ID,
+        position: { x: o.center.x, z: o.center.z },
+        // The scan's yaw is about +Y in the same frame the rest of the app uses.
+        rotationY: o.rotation,
+        size: { width: o.width, height: o.height ?? 700, depth: o.depth },
+        label: o.category,
+        scanned: true,
+      })),
+      designSelection: null,
+    });
+
     get().regenerateLayout();
   },
 

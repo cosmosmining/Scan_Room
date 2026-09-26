@@ -5,7 +5,7 @@ import { MaterialEditor } from './MaterialEditor';
 import { PhotorealRender } from './PhotorealRender';
 import { ThemePicker } from './ThemePicker';
 import { DEFAULT_FINISH, type SurfaceFinish } from '@/systems/aesthetic/finishes';
-import { furnitureItem } from '@/systems/furniture/catalog';
+import { placedName } from '@/systems/furniture/catalog';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 
 /**
@@ -63,7 +63,7 @@ export function StylePanel() {
   const instances = useConfiguratorStore((s) => s.instances);
   const catalog = useConfiguratorStore((s) => s.catalog);
   const targetName = furnitureSelection
-    ? furnitureItem(items.find((i) => i.id === furnitureSelection)?.itemId ?? '')?.name ?? null
+    ? (() => { const f = items.find((i) => i.id === furnitureSelection); return f ? placedName(f) : null; })()
     : moduleSelection
       ? catalog.definitions[
           instances.find((i) => i.id === moduleSelection)?.definitionId ?? ''

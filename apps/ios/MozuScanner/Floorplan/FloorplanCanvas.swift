@@ -38,6 +38,11 @@ struct FloorplanCanvas: View {
     /// Fixture id (its index in the scan) drawn as selected, if any.
     var selectedFixture: Int? = nil
 
+    /// Index into `floorplan.objects` of the scanned object drawn as selected.
+    /// RoomPlan finds furniture that is in the room today and will not be there
+    /// when the kitchen is fitted, so the plan has to let you say so.
+    var selectedObject: Int? = nil
+
     /// Editing callback: phase, where the finger went down, where it is now —
     /// both in millimetres. Nil disables editing entirely.
     var onEdit: ((EditPhase, Vec2, Vec2) -> Void)? = nil
@@ -84,12 +89,19 @@ struct FloorplanCanvas: View {
         context.stroke(poly, with: .color(theme.wall), style: StrokeStyle(lineWidth: wallPx, lineJoin: .miter))
 
         // Objects (furniture).
-        for o in fp.objects {
+        for (i, o) in fp.objects.enumerated() {
             let path = objectPath(o, transform: p)
-            context.fill(path, with: .color(theme.object))
-            context.stroke(path, with: .color(theme.dimension), lineWidth: thin)
+            let chosen = i == selectedObject
+            context.fill(path, with: .color(chosen ? theme.selection.opacity(0.28) : theme.object))
+            context.stroke(
+                path,
+                with: .color(chosen ? theme.selection : theme.dimension),
+                lineWidth: chosen ? thin * 2.5 : thin
+            )
             context.draw(
-                Text(o.category).font(.system(size: fontPx * 0.5)).foregroundColor(theme.dimension),
+                Text(o.category)
+                    .font(.system(size: fontPx * 0.5))
+                    .foregroundColor(chosen ? theme.selection : theme.dimension),
                 at: p(o.center)
             )
         }

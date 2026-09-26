@@ -89,6 +89,41 @@ const WEAK_MIN_FEATURES = 2;
  * contrast must be unmistakable, the shape properly plate-like, and the size
  * within a real cover's range (paper and posters are bigger).
  */
+/**
+ * Luminance at which a pixel is CLIPPED — the sensor has run out of range and
+ * the true brightness is unknowable.
+ */
+export const SATURATED_LEVEL = 250;
+/**
+ * Reject a candidate this much of which is clipped.
+ *
+ * This is what tells a LIGHT from a faceplate, and nothing else does. A
+ * luminaire — an LED strip, a cove light, a downlight — is a SOURCE: it blows
+ * the sensor out, so its pixels pile up at the top of the range. A white
+ * plastic faceplate is a REFLECTOR under the same auto-exposure: it is the
+ * brightest thing on the wall, but it is not clipped, because the exposure is
+ * set by the scene and the plate is part of the scene.
+ *
+ * Without this, LED cove lighting walks straight into the blank-cover tier
+ * below: solid, high-contrast and featureless, which is the exact shape of a
+ * sealed blanking plate. A tester's hallway produced 33 candidates in one frame
+ * and confirmed zero sockets — the detector spent its whole budget on the
+ * lighting, and the boxes slid along the strips from frame to frame, which is
+ * what "the LED lights run around" looks like from the outside.
+ *
+ * A quarter is deliberately generous. A real plate can carry a specular hotspot
+ * from a window or a lamp; it does not carry one across a quarter of its face,
+ * and a plate that did would have no visible slots left to confirm it anyway.
+ */
+export const MAX_SATURATED_FRACTION = 0.25;
+/**
+ * Most candidates worth measuring against depth in one frame. Depth measurement
+ * fits a plane per candidate, so its cost is linear in candidate count, and a
+ * frame yielding dozens is a frame looking at something that is not a wall of
+ * sockets. Consumed by the capture loop, not by this file.
+ */
+export const MAX_MEASURED_CANDIDATES = 12;
+
 const BLANK_MIN_CONTRAST = 16;
 const BLANK_MIN_SOLIDITY = 0.78;
 const BLANK_MAX_SIDE_FRAC = 0.28;
@@ -261,6 +296,27 @@ function sweep(mask: Uint8Array, w: number, h: number, r: number, erodePass: boo
 }
 
 /** Fraction of a bounding box that is set in the mask. */
+/** Fraction of a box whose pixels are clipped at the top of the range. */
+export function saturatedFraction(
+  g: ArrayLike<number>,
+  w: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): number {
+  let clipped = 0;
+  let total = 0;
+  for (let y = y0; y <= y1; y++) {
+    const row = y * w;
+    for (let x = x0; x <= x1; x++) {
+      total += 1;
+      if (g[row + x] >= SATURATED_LEVEL) clipped += 1;
+    }
+  }
+  return total > 0 ? clipped / total : 0;
+}
+
 function maskFill(
   mask: Uint8Array, w: number, x0: number, y0: number, x1: number, y1: number,
 ): number {
@@ -453,6 +509,11 @@ export function detectSockets(img: DetectorImage, opts: DetectorOptions = {}): S
     const cy = Math.round((p.miny + p.maxy) / 2);
     const wallMean = boxMean(s, w, h, cx, cy, Math.max(bw, bh) * 2);
     const contrast = plateMean - wallMean;
+
+    // Emissive? Then it is a light, not a plate. Checked here, before the
+    // per-candidate feature scan, because on a frame full of LED strip this is
+    // what stops the expensive work from happening at all.
+    if (saturatedFraction(g, w, p.minx, p.miny, p.maxx, p.maxy) > MAX_SATURATED_FRACTION) continue;
 
     // Confirmation, in tiers. A faceplate usually carries a few SMALL dark
     // features (slots, a ground hole, a rocker seam); one that is mostly dark

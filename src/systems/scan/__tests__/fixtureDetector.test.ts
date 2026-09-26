@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectSockets, type DetectorImage } from '@/systems/scan';
+import { detectSockets, saturatedFraction, type DetectorImage } from '@/systems/scan';
 
 /** A flat RGBA image filled with a background gray (the wall). */
 function makeImage(w: number, h: number, bg = 180): DetectorImage {
@@ -211,5 +211,76 @@ describe('socket detector (white plate + dark features)', () => {
     rect(img, 0, 50, 20, 46, 235); // half a plate at the border
     rect(img, 6, 62, 4, 12, 40);
     expect(detectSockets(img)).toHaveLength(0);
+  });
+});
+
+/**
+ * An LED luminaire, painted the way a camera actually records one: CLIPPED.
+ * A light source runs the sensor out of range, so its pixels pile up at the top
+ * of the 8-bit scale instead of sitting somewhere on it. That is the difference
+ * between a source and a reflector, and it is the only reliable one — in shape,
+ * solidity and contrast an LED panel and a sealed blanking plate are the same
+ * object.
+ */
+function paintLed(img: DetectorImage, x: number, y: number, w: number, h: number): void {
+  rect(img, x, y, w, h, 255);
+}
+
+describe('LED lighting is not a socket', () => {
+  it('rejects a clipped LED panel that is otherwise plate-shaped', () => {
+    // Exactly the shape the blank-sealed-cover tier accepts: solid, plate-sized,
+    // featureless, and far brighter than the wall. Only the clipping tells them
+    // apart.
+    const img = makeImage(200, 150);
+    paintLed(img, 84, 52, 34, 44);
+    expect(detectSockets(img)).toHaveLength(0);
+  });
+
+  it('rejects a run of LED cove lighting', () => {
+    // A strip broken into plate-sized chunks by the morphological opening —
+    // this is what produced 33 candidates in one frame in the field, and what
+    // made the boxes appear to slide along the strip between frames.
+    const img = makeImage(320, 200);
+    for (let i = 0; i < 5; i++) paintLed(img, 30 + i * 52, 40, 36, 30);
+    expect(detectSockets(img)).toHaveLength(0);
+  });
+
+  it('still finds a real socket on a wall lit by an LED strip', () => {
+    // The point of the gate is to remove the lighting WITHOUT removing the
+    // sockets under it; a detector that goes quiet in a lit room is no better
+    // than one that cries wolf.
+    const img = makeImage(320, 200);
+    for (let i = 0; i < 4; i++) paintLed(img, 20 + i * 60, 24, 40, 18);
+    paintSocket(img, 160, 130);
+    const dets = detectSockets(img);
+    expect(dets).toHaveLength(1);
+    expect(dets[0].cx).toBeGreaterThan(0.4);
+    expect(dets[0].cx).toBeLessThan(0.6);
+  });
+
+  it('keeps a plate carrying a small specular hotspot', () => {
+    // A window or a lamp can clip a CORNER of a real plate. The threshold is a
+    // quarter of its face precisely so this survives.
+    const img = makeImage(200, 150);
+    paintSocket(img, 100, 72);
+    rect(img, 88, 56, 8, 8, 255); // ~4% of a 34x44 plate
+    expect(detectSockets(img)).toHaveLength(1);
+  });
+});
+
+describe('saturatedFraction', () => {
+  it('is 1 for a fully clipped box and 0 for an unclipped one', () => {
+    const g = new Float32Array(10 * 10).fill(200);
+    expect(saturatedFraction(g, 10, 0, 0, 9, 9)).toBe(0);
+    g.fill(255);
+    expect(saturatedFraction(g, 10, 0, 0, 9, 9)).toBe(1);
+  });
+
+  it('counts only the clipped pixels inside the box', () => {
+    const g = new Float32Array(10 * 10).fill(0);
+    for (let y = 0; y < 5; y++) for (let x = 0; x < 10; x++) g[y * 10 + x] = 255;
+    expect(saturatedFraction(g, 10, 0, 0, 9, 9)).toBeCloseTo(0.5, 6);
+    expect(saturatedFraction(g, 10, 0, 0, 9, 4)).toBe(1);
+    expect(saturatedFraction(g, 10, 0, 5, 9, 9)).toBe(0);
   });
 });

@@ -13,7 +13,13 @@ struct FloorplanResultView: View {
     @State private var scan: RoomScan
     /// While on, the plan is an editor: drag a socket along the walls, tap bare
     /// wall to drop a new one, and set the selected one's height.
-    @State private var editingSockets = false
+    /// Which editing job the plan is doing. Sockets and furniture are edited
+    /// with the same finger on the same canvas, so only one can be live at a
+    /// time — otherwise a tap meant to delete a sofa drops a socket behind it.
+    enum EditMode { case none, sockets, furniture }
+    @State private var editMode: EditMode = .none
+    /// Index into `scan.objects` of the scanned furniture being edited.
+    @State private var selectedObject: Int?
     /// Index into `scan.fixtures` of the socket being edited.
     @State private var selectedSocket: Int?
     /// Index picked up by the current drag (nil when the finger went down on
@@ -45,14 +51,17 @@ struct FloorplanResultView: View {
         VStack(spacing: 0) {
             FloorplanCanvas(
                 floorplan: floorplan,
-                selectedFixture: editingSockets ? selectedSocket : nil,
-                onEdit: editingSockets ? { handleEdit($0, from: $1, to: $2) } : nil
+                selectedFixture: editMode == .sockets ? selectedSocket : nil,
+                selectedObject: editMode == .furniture ? selectedObject : nil,
+                onEdit: editMode == .none ? nil : { handleEdit($0, from: $1, to: $2) }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(alignment: .topLeading) {
-                if editingSockets {
-                    Text("Tap a wall to add · drag a socket to move it")
+                if editMode != .none {
+                    Text(editMode == .sockets
+                         ? "Tap a wall to add · drag a socket to move it"
+                         : "Tap a piece of furniture to select it, then remove it")
                         .font(.caption2)
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(.thinMaterial, in: Capsule())
@@ -61,7 +70,8 @@ struct FloorplanResultView: View {
             }
             .padding(16)
 
-            if editingSockets { socketInspector.padding(.horizontal, 16) }
+            if editMode == .sockets { socketInspector.padding(.horizontal, 16) }
+            if editMode == .furniture { furnitureInspector.padding(.horizontal, 16) }
 
             stats
                 .padding(.horizontal, 16)
@@ -76,19 +86,42 @@ struct FloorplanResultView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
-                Button {
-                    editingSockets.toggle()
-                    if !editingSockets { selectedSocket = nil }
-                } label: {
-                    Label(
-                        editingSockets ? "Done editing sockets" : "Add / edit sockets",
-                        systemImage: editingSockets ? "checkmark.circle" : "bolt.fill"
-                    )
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: 10) {
+                    Button {
+                        editMode = editMode == .sockets ? .none : .sockets
+                        selectedObject = nil
+                        if editMode != .sockets { selectedSocket = nil }
+                    } label: {
+                        Label(
+                            editMode == .sockets ? "Done" : "Sockets",
+                            systemImage: editMode == .sockets ? "checkmark.circle" : "bolt.fill"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(editMode == .sockets ? .accentColor : .secondary)
+                    .controlSize(.large)
+
+                    // RoomPlan reports whatever furniture is in the room today.
+                    // Most of it is going out before the kitchen goes in, and a
+                    // plan that insists on a sofa nobody is keeping is a plan
+                    // people stop trusting.
+                    Button {
+                        editMode = editMode == .furniture ? .none : .furniture
+                        selectedSocket = nil
+                        if editMode != .furniture { selectedObject = nil }
+                    } label: {
+                        Label(
+                            editMode == .furniture ? "Done" : "Furniture",
+                            systemImage: editMode == .furniture ? "checkmark.circle" : "shippingbox.fill"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(editMode == .furniture ? .accentColor : .secondary)
+                    .controlSize(.large)
+                    .disabled(scan.objects.isEmpty)
                 }
-                .buttonStyle(.bordered)
-                .tint(editingSockets ? .accentColor : .secondary)
-                .controlSize(.large)
 
                 // The handoff people actually need: scan here, design on a
                 // laptop. A deep link cannot cross that gap and a whole house
@@ -232,6 +265,15 @@ struct FloorplanResultView: View {
     /// socket on the nearest wall. Nothing is destroyed by a stray tap — removal
     /// is an explicit button in the inspector.
     private func handleEdit(_ phase: FloorplanCanvas.EditPhase, from start: Vec2, to current: Vec2) {
+        // Furniture is select-and-remove, not drag: a scanned object is a
+        // measurement of what is in the room, so moving it would be inventing
+        // data. Deleting it is the only honest edit.
+        if editMode == .furniture {
+            if phase == .ended, Geo.distance(start, current) <= Self.tapSlopMm {
+                selectedObject = objectIndex(containing: start)
+            }
+            return
+        }
         switch phase {
         case .changed:
             if !dragClaimed {
@@ -297,6 +339,68 @@ struct FloorplanResultView: View {
     }
 
     /// The scan-index of the socket nearest a point, within grabbing distance.
+    /// Topmost scanned object whose oriented footprint contains the point.
+    /// Reverse order so the thing drawn last — the one on top — is the one you
+    /// get, which is what a finger means by "that one".
+    private func objectIndex(containing point: Vec2) -> Int? {
+        for (i, o) in scan.objects.enumerated().reversed() {
+            let dx = point.x - o.center.x
+            let dz = point.z - o.center.z
+            let c = cos(-o.rotation), s = sin(-o.rotation)
+            let localX = dx * c - dz * s
+            let localZ = dx * s + dz * c
+            // A little slop, so a thin object (a rug, a radiator) stays tappable.
+            let halfW = max(o.width / 2, Self.tapSlopMm)
+            let halfD = max(o.depth / 2, Self.tapSlopMm)
+            if abs(localX) <= halfW && abs(localZ) <= halfD { return i }
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var furnitureInspector: some View {
+        if let i = selectedObject, scan.objects.indices.contains(i) {
+            let object = scan.objects[i]
+            HStack(spacing: 12) {
+                Label(object.category, systemImage: "shippingbox")
+                    .font(.subheadline.weight(.semibold))
+                Text("\(Units.length(object.width, scan.unitSystem)) × \(Units.length(object.depth, scan.unitSystem))")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(role: .destructive) {
+                    scan.objects.remove(at: i)
+                    selectedObject = nil
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        } else {
+            HStack {
+                Text("\(scan.objects.count) pieces of furniture detected — tap one to remove it")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !scan.objects.isEmpty {
+                    Button(role: .destructive) {
+                        scan.objects.removeAll()
+                        selectedObject = nil
+                    } label: {
+                        Text("Remove all")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
     private func fixtureIndex(near point: Vec2) -> Int? {
         floorplan.fixtures
             .map { ($0.id, Geo.distance($0.point, point)) }

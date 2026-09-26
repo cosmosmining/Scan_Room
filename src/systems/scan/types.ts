@@ -6,6 +6,7 @@ import type {
   Vec3,
   Wall,
 } from '@/lib/types';
+import type { ScanObject } from '@mozu/scan-sdk';
 
 /** Fine-grained provenance for a capture. */
 export type ScannerId =
@@ -45,6 +46,12 @@ export interface RoomGeometry {
   provider: ScannerId;
   /** Overall capture confidence, 0..1 (1 = exact / user-asserted). */
   confidence: number;
+  /**
+   * Furniture the scan found in the room. These are measurements of what is
+   * there today, not products to be quoted — most of it is going out before the
+   * kitchen goes in, so every one of them has to be removable.
+   */
+  objects?: ScanObject[];
   capturedAt: string;
 }
 

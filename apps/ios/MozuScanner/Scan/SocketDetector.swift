@@ -113,6 +113,36 @@ enum SocketDetector {
     /// Non-max suppression overlap. Deliberately NOT lowered — see the note at
     /// the suppression loop.
     static let nmsIoU = 0.3
+    /// Luminance at which a pixel is CLIPPED — the sensor has run out of range
+    /// and the true brightness is unknowable.
+    static let saturatedLevel: Float = 250
+    /// Reject a candidate this much of which is clipped.
+    ///
+    /// This is what tells a LIGHT from a faceplate, and nothing else does. A
+    /// luminaire — an LED strip, a cove light, a downlight — is a source: it
+    /// blows the sensor out, so its pixels pile up at the top of the range. A
+    /// white plastic faceplate is a REFLECTOR under the same auto-exposure: it
+    /// is the brightest thing on the wall, but it is not clipped, because the
+    /// exposure is set by the scene and the plate is part of the scene.
+    ///
+    /// Without this, LED cove lighting walks straight into the blank-cover tier
+    /// below: solid, high-contrast, and featureless, which is the exact shape of
+    /// a sealed blanking plate. A tester's hallway produced 33 candidates in a
+    /// frame and confirmed zero sockets — the detector spent its whole budget on
+    /// the lighting, and the boxes slid along the strips from frame to frame,
+    /// which is what "the LED lights run around" looks like from the outside.
+    ///
+    /// A quarter is deliberately generous. A real plate can carry a specular
+    /// hotspot from a window or a lamp; it does not carry one across a quarter
+    /// of its face, and a plate that did would have no visible slots to confirm
+    /// it anyway.
+    static let maxSaturatedFraction = 0.25
+    /// Most candidates measured against depth in one frame. Depth measurement is
+    /// the expensive half of a frame, and a frame that produces dozens of
+    /// candidates is a frame looking at something that is not a wall of sockets.
+    /// Measuring the best few costs a fixed amount; measuring all of them is how
+    /// one bad frame stalls the walk.
+    static let maxMeasuredCandidates = 12
     /// Structuring-element radius for the opening that separates plates from
     /// whatever is attached to them, as a fraction of the SMALLEST acceptable
     /// plate. Tied to plate size rather than image size because the question is
@@ -205,6 +235,13 @@ enum SocketDetector {
             let cy = (p.miny + p.maxy) / 2
             let wallMean = Double(boxMean(integral, w, h, cx, cy, max(bw, bh) * 2))
             let contrast = plateMean - wallMean
+
+            // Emissive? Then it is a light, not a plate. Checked here, before
+            // the per-candidate feature scan, because on a frame full of LED
+            // strip this is what stops the expensive work from happening at all.
+            if saturatedFraction(g, w, p.minx, p.miny, p.maxx, p.maxy) > maxSaturatedFraction {
+                continue
+            }
 
             // Confirmation, in tiers. A faceplate usually carries a few SMALL
             // dark features; one that is mostly dark inside is a frame or a
@@ -448,6 +485,23 @@ enum SocketDetector {
     }
 
     /// Fraction of a bounding box that is set in the mask.
+    /// Fraction of a box whose pixels are clipped at the top of the range.
+    private static func saturatedFraction(
+        _ g: [Float], _ w: Int,
+        _ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int
+    ) -> Double {
+        var clipped = 0
+        var total = 0
+        for y in y0...y1 {
+            let row = y * w
+            for x in x0...x1 {
+                total += 1
+                if g[row + x] >= saturatedLevel { clipped += 1 }
+            }
+        }
+        return total > 0 ? Double(clipped) / Double(total) : 0
+    }
+
     private static func maskFill(
         _ mask: [Bool], _ w: Int, _ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int
     ) -> Double {

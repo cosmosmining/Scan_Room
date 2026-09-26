@@ -35,6 +35,37 @@ export interface PlacedFurniture {
   rotationY: number;
   /** Per-instance finish override; undefined keeps the item's own materials. */
   finish?: SurfaceFinish;
+  /**
+   * A MEASURED size, for a piece the scan found rather than one picked from the
+   * catalogue. A scanned sofa is whatever size that sofa is; forcing it to the
+   * catalogue's sofa would be inventing a measurement, and the whole point of
+   * carrying it over is that it is a measurement.
+   */
+  size?: { width: number; height: number; depth: number };
+  /** What the scan called it, e.g. "sofa" — shown instead of a catalogue name. */
+  label?: string;
+  /** True when this came from a scan. Drawn as a measurement, not a product. */
+  scanned?: boolean;
+}
+
+/** The catalogue item behind a placed piece — absent for a scanned one. */
+export const SCANNED_ITEM_ID = '__scanned__';
+
+/**
+ * The size to draw a placed piece at: its measured size when it has one, else
+ * its catalogue size. Every view must go through this, or a scanned object is
+ * hit-tested at one size and drawn at another.
+ */
+export function placedSize(placed: PlacedFurniture): { width: number; height: number; depth: number } {
+  if (placed.size) return placed.size;
+  const item = FURNITURE_ITEMS.find((i) => i.id === placed.itemId);
+  return item?.size ?? { width: 600, height: 600, depth: 600 };
+}
+
+/** What to call a placed piece on screen. */
+export function placedName(placed: PlacedFurniture): string {
+  if (placed.label) return placed.label;
+  return FURNITURE_ITEMS.find((i) => i.id === placed.itemId)?.name ?? placed.itemId;
 }
 
 const m = (w: number, h: number, d: number) => ({

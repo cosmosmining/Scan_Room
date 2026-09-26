@@ -54,6 +54,26 @@ targets:
         INFOPLIST_FILE: MozuScanner/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_PREVIEWS: YES
+      configs:
+        # OPTIMISE THE DEBUG BUILD. This is not a preference, it is the
+        # difference between the scanner working and not working.
+        #
+        # Swift's default Debug setting is -Onone: no inlining, no generic
+        # specialisation, and a bounds check on every array subscript. Socket
+        # detection walks about a million pixels per frame through exactly that
+        # kind of code, so -Onone costs 30-100x. Measured on device from Xcode's
+        # Run scheme (which is Debug): 3208 ms per frame, nine frames analysed in
+        # a whole scan, zero sockets confirmed. The detector was not wrong, it was
+        # never given a chance to look.
+        #
+        # -O restores the optimiser while keeping the Debug configuration, so the
+        # Metal-validation workaround below, DEBUG-only code and symbols all still
+        # apply. The cost is that stepping through optimised Swift is confusing:
+        # if you need to debug line by line, set this back to -Onone for that
+        # session.
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+          GCC_OPTIMIZATION_LEVEL: "s"
     # RealityKit / ARKit / RoomPlan are system frameworks; auto-linked from imports.
 
 schemes:

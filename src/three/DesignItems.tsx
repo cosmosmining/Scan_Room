@@ -4,7 +4,12 @@ import { Suspense, useCallback, useMemo, useRef, useState } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { furnitureItem, furnitureModelUrl, type PlacedFurniture } from '@/systems/furniture/catalog';
+import {
+  furnitureItem,
+  furnitureModelUrl,
+  placedSize,
+  type PlacedFurniture,
+} from '@/systems/furniture/catalog';
 import { furnitureParts } from '@/systems/furniture/parts';
 import { swatchById, type SurfaceFinish } from '@/systems/aesthetic/finishes';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
@@ -67,13 +72,44 @@ function FurnitureMesh({
 }) {
   const item = furnitureItem(placed.itemId);
   const parts = useMemo(() => (item ? furnitureParts(item) : []), [item]);
+  const measured = placedSize(placed);
   // A finish is a per-instance OVERRIDE. Absent, the item keeps the colours its
   // parts were authored with — the same rule as `DesignState.add`, which
   // deliberately leaves `finish` nil so placing a sofa does not flatten its
   // authored materials into one swatch.
   const override = useOverrideMaterial(placed.finish);
 
-  if (!item) return null;
+  // A scanned piece has no catalogue entry and no model — it is a measurement
+  // of what is in the room today. Drawn as the box it was measured as, in a
+  // colour that says so, and removable like anything else.
+  if (!item) {
+    return (
+      <group
+        position={[placed.position.x, 0, placed.position.z]}
+        rotation={[0, placed.rotationY, 0]}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onGrab();
+        }}
+      >
+        <mesh castShadow receiveShadow position={[0, measured.height / 2, 0]}>
+          <boxGeometry args={[measured.width, measured.height, measured.depth]} />
+          <meshStandardMaterial
+            color={dragging ? '#7dd3fc' : '#9aa3ad'}
+            roughness={0.85}
+            transparent
+            opacity={0.55}
+          />
+        </mesh>
+        {selected && (
+          <mesh position={[0, measured.height / 2, 0]}>
+            <boxGeometry args={[measured.width + 60, measured.height + 60, measured.depth + 60]} />
+            <meshBasicMaterial color="#38bdf8" transparent opacity={0.16} depthWrite={false} />
+          </mesh>
+        )}
+      </group>
+    );
+  }
 
   const height = item.size.height;
 

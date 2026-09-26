@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import {
   FURNITURE_CATEGORIES,
   furnitureIn,
-  furnitureItem,
+  placedName,
 } from '@/systems/furniture/catalog';
 import { recommendFurniture } from '@/systems/furniture/recommend';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
@@ -153,7 +153,6 @@ function Placed() {
   return (
     <div className="flex flex-col gap-2">
       {items.map((placed) => {
-        const item = furnitureItem(placed.itemId);
         const isSelected = placed.id === selection;
         return (
           <div
@@ -167,7 +166,7 @@ function Placed() {
               onClick={() => select(isSelected ? null : placed.id)}
               className="flex w-full items-center justify-between text-left text-sm"
             >
-              <span className="min-w-0 truncate">{item?.name ?? placed.itemId}</span>
+              <span className="min-w-0 truncate">{placedName(placed)}</span>
               <span className="ml-2 shrink-0 tabular-nums text-xs text-neutral-500">
                 {Math.round((placed.rotationY * 180) / Math.PI)}°
               </span>

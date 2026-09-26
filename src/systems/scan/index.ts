@@ -9,6 +9,10 @@ export { LidarScanner } from './lidarScanner';
 export {
   detectSockets,
   classifyPlate,
+  saturatedFraction,
+  SATURATED_LEVEL,
+  MAX_SATURATED_FRACTION,
+  MAX_MEASURED_CANDIDATES,
   RESOLVABLE_PLATE_PX,
   type PlateKind,
   heuristicSocketDetector,

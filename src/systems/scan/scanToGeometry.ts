@@ -69,5 +69,11 @@ export function scanToGeometry(scan: RoomScan): RoomGeometry {
       detected: fixtures.filter((f) => f.source === 'detected').length,
     };
   }
+  // …and the furniture the scan saw. This used to be dropped here, silently:
+  // the iPad measured a room full of objects and the web opened an empty shell,
+  // so nothing could be checked against what is actually in the room and
+  // nothing could be removed. They are carried as MEASUREMENTS, not products —
+  // see `applyRoomGeometry`, which seeds them as removable placed items.
+  geometry.objects = scan.objects ?? [];
   return geometry;
 }

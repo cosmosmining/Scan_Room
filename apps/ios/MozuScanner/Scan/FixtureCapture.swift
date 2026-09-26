@@ -242,7 +242,18 @@ final class FixtureCapture {
             let depth = depthData.flatMap { DepthGate.snapshot($0) }
             var measured: [(SocketDetection, PlateGeometry)] = []
             if let depth {
-                for d in found {
+                // Measure the best few, not all of them. Each measurement fits a
+                // plane over a neighbourhood, so the cost is linear in candidate
+                // count — and a frame that yields dozens of candidates is a frame
+                // looking at something that is not a wall of sockets. A tester's
+                // hallway of LED cove lighting produced 33 in one frame and
+                // confirmed nothing; measuring all 33 is how a single frame
+                // stretches to seconds and the walk stops being looked at.
+                let ranked = found.count > SocketDetector.maxMeasuredCandidates
+                    ? Array(found.sorted { $0.score > $1.score }
+                        .prefix(SocketDetector.maxMeasuredCandidates))
+                    : found
+                for d in ranked {
                     guard let geometry = DepthGate.measure(
                         d,
                         depth: depth,

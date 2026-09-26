@@ -9,7 +9,7 @@ import {
   type RenderQuality,
 } from '@/systems/aesthetic/renderRequest';
 import { DEFAULT_FINISH, type SurfaceFinish } from '@/systems/aesthetic/finishes';
-import { furnitureItem } from '@/systems/furniture/catalog';
+import { furnitureItem, placedSize } from '@/systems/furniture/catalog';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 
 /**
@@ -84,23 +84,20 @@ export function PhotorealRender({
         }];
       });
 
-      const furniture: RenderItem[] = designItems.flatMap((placed) => {
+      const furniture: RenderItem[] = designItems.map((placed) => {
         const item = furnitureItem(placed.itemId);
-        if (!item) return [];
-        return [{
+        const size = placedSize(placed);
+        return {
           // The render server resolves a model by catalogue id, the same id the
-          // iPad sends for the same piece.
-          model: item.id,
+          // iPad sends for the same piece. A scanned measurement has no model,
+          // so it renders as the box it was measured as.
+          model: item?.id ?? null,
           x: placed.position.x / 1000,
           z: placed.position.z / 1000,
           rotationY: placed.rotationY,
-          size: [
-            item.size.width / 1000,
-            item.size.height / 1000,
-            item.size.depth / 1000,
-          ] as [number, number, number],
+          size: [size.width / 1000, size.height / 1000, size.depth / 1000] as [number, number, number],
           finish: placed.finish ?? null,
-        }];
+        };
       });
 
       const items: RenderItem[] = [...modules, ...furniture];

@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { Room, Wall, WallFixture } from '@/lib/types';
 import { swatchById } from '@/systems/aesthetic/finishes';
-import { furnitureItem } from '@/systems/furniture/catalog';
+import { furnitureItem, placedName, placedSize } from '@/systems/furniture/catalog';
 import { placeByHand } from '@/systems/layout';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 
@@ -227,9 +227,9 @@ export function PlanEditor() {
         };
       }
       const placed = designItems.find((i) => i.id === id);
-      const item = placed && furnitureItem(placed.itemId);
-      if (!placed || !item) return null;
-      const corner = rotate({ x: item.size.width / 2, z: item.size.depth / 2 }, placed.rotationY);
+      if (!placed) return null;
+      const size = placedSize(placed);
+      const corner = rotate({ x: size.width / 2, z: size.depth / 2 }, placed.rotationY);
       const len = Math.hypot(corner.x, corner.z) || 1;
       const push = 260; // mm beyond the corner, so it never sits on the body
       return {
@@ -301,13 +301,12 @@ export function PlanEditor() {
       // Topmost furniture whose oriented footprint contains the point.
       for (let i = designItems.length - 1; i >= 0; i--) {
         const placed = designItems[i];
-        const item = furnitureItem(placed.itemId);
-        if (!item) continue;
+        const size = placedSize(placed);
         const rel = { x: x - placed.position.x, z: z - placed.position.z };
         const local = rotate(rel, -placed.rotationY);
         if (
-          Math.abs(local.x) <= Math.max(item.size.width / 2, ITEM_SLOP) &&
-          Math.abs(local.z) <= Math.max(item.size.depth / 2, ITEM_SLOP)
+          Math.abs(local.x) <= Math.max(size.width / 2, ITEM_SLOP) &&
+          Math.abs(local.z) <= Math.max(size.depth / 2, ITEM_SLOP)
         ) {
           return { kind: 'furniture', id: placed.id, from: placed.position };
         }
@@ -660,10 +659,9 @@ export function PlanEditor() {
             tone, a front tick so its facing is legible, and — when selected —
             corner handles and the rotate handle on its diagonal. */}
         {designItems.map((placed) => {
-          const item = furnitureItem(placed.itemId);
-          if (!item) return null;
-          const halfW = item.size.width / 2;
-          const halfD = item.size.depth / 2;
+          const size = placedSize(placed);
+          const halfW = size.width / 2;
+          const halfD = size.depth / 2;
           const corners = ([[-halfW, -halfD], [halfW, -halfD], [halfW, halfD], [-halfW, halfD]] as const)
             .map(([x, z]) => {
               const r = rotate({ x, z }, placed.rotationY);
@@ -690,7 +688,7 @@ export function PlanEditor() {
                 stroke={isSelected ? '#38bdf8' : '#6b6b74'}
                 strokeWidth={wallW * 0.12}
               />
-              {item.size.width > font * 4 && (
+              {size.width > font * 4 && (
                 <text
                   x={placed.position.x}
                   y={placed.position.z + font * 0.22}
@@ -698,7 +696,7 @@ export function PlanEditor() {
                   textAnchor="middle"
                   fill="#1a1a1c"
                 >
-                  {item.name}
+                  {placedName(placed)}
                 </text>
               )}
               {isSelected && corners.map((c, i) => (
@@ -861,8 +859,8 @@ export function PlanEditor() {
           </div>
         ) : selectedItem ? (
           <p className="text-neutral-400">
-            {furnitureItem(selectedItem.itemId)?.name ?? 'Item'} · drag to move · drag the blue
-            handle to turn it
+            {placedName(selectedItem)} · drag to move · drag the blue handle to turn it
+            {selectedItem.scanned ? ' · Delete removes it from the plan' : ''}
           </p>
         ) : selectedModule ? (
           <p className="text-neutral-400">
