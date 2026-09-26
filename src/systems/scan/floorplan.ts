@@ -15,6 +15,7 @@ import {
   type Floorplan,
   type RoomScan,
   type ScanFixture,
+  type ScanObject,
   type ScanOpening,
   type ScanSource,
 } from '@mozu/scan-sdk';
@@ -51,6 +52,7 @@ function wallsToOpenings(walls: Wall[]): ScanOpening[] {
         width: o.width,
         height: o.height,
         sill: o.sillHeight,
+        ...(o.glass ? { glass: true } : {}),
       });
     }
   });
@@ -93,13 +95,13 @@ export function roomGeometryToScan(geometry: RoomGeometry): RoomScan {
 }
 
 /** The domain `Room` aggregate → a `RoomScan` (for rendering its floorplan). */
-export function roomToScan(room: Room): RoomScan {
+export function roomToScan(room: Room, objects: ScanObject[] = []): RoomScan {
   return {
     schema: 'mozu.roomscan/1',
     polygon: room.footprint.map((p) => ({ x: p.x, z: p.z })),
     height: room.height,
     openings: wallsToOpenings(room.walls),
-    objects: [],
+    objects,
     fixtures: wallsToFixtures(room.walls),
     source: room.source === 'ar-scan' ? 'webxr' : 'manual',
     unitSystem: room.unitSystem,
@@ -109,6 +111,6 @@ export function roomToScan(room: Room): RoomScan {
 }
 
 /** Domain `Room` → dimensioned `Floorplan`. */
-export function roomToFloorplan(room: Room): Floorplan {
-  return buildFloorplan(roomToScan(room));
+export function roomToFloorplan(room: Room, objects: ScanObject[] = []): Floorplan {
+  return buildFloorplan(roomToScan(room, objects));
 }

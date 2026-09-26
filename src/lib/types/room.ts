@@ -9,6 +9,11 @@ export interface WallOpening {
   height: Millimeters;
   /** Bottom of the opening from the floor (0 for doors). */
   sillHeight: Millimeters;
+  /**
+   * Suggested from depth readings that went through the wall — probably glass,
+   * possibly a mirror. Drawn as a suggestion; confirming clears it.
+   */
+  glass?: boolean;
 }
 
 /**

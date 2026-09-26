@@ -31,18 +31,34 @@ struct ScanOpening: Codable, Equatable {
     var height: Double
     /// Bottom of the opening above the floor (0 for doors).
     var sill: Double?
+    /// Found by `GlassFinder` — depth readings went THROUGH the wall here —
+    /// rather than recognised by RoomPlan. Probably glass; possibly a mirror,
+    /// which a depth sensor cannot tell apart. Drawn as a suggestion and
+    /// removable with a tap. Cleared when someone confirms it.
+    var glass: Bool? = nil
 }
 
-/// A detected object (furniture / appliance) from the scan.
+/// A detected object (furniture / appliance) from the scan — or a column.
 struct ScanObject: Codable, Equatable {
+    /// RoomPlan's category ("sofa", "table", …), or `ScanObject.column` for a
+    /// pillar the wall analysis found standing in the room.
     var category: String
     var center: Vec2
     var width: Double
     var depth: Double
-    /// Y rotation, radians.
+    /// Yaw in the PLAN convention: the object's width axis points along
+    /// (cos r, sin r) in (x, z). That is what RoomPlan's transform gives, and it
+    /// is the OPPOSITE sense to a 3D yaw about +Y — a 3D scene uses −rotation.
     var rotation: Double
     /// Height (millimetres), when RoomPlan reports it — drives the box massing.
     var height: Double? = nil
+    /// "round" or "box" — set for columns, whose footprint is not always a box.
+    var shape: String? = nil
+
+    static let column = "column"
+    /// Structure, not furniture: it stays when the furniture goes.
+    var isColumn: Bool { category == Self.column }
+    var isRound: Bool { shape == "round" }
 }
 
 /// A mechanical/electrical/plumbing point found on a wall — a socket, a switch,

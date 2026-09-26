@@ -168,6 +168,18 @@ final class FixtureCapture {
     /// Raw image sightings, banked ONLY while there is no scene depth to measure
     /// with, so such a session still has something to ray-cast at the end.
     private(set) var sightings: [FixtureSighting] = []
+    /// Depth readings banked for `GlassFinder`, world metres: where the camera
+    /// was and where each reading landed. Walls are not known until the scan
+    /// ends, so the rays are kept and judged against the finished walls then —
+    /// readings that went THROUGH a wall are how glass RoomPlan missed is found.
+    private(set) var rays: [(eye: SIMD3<Float>, hit: SIMD3<Float>)] = []
+    /// A sparse grid per analysed frame: glass only needs a speckle of readings
+    /// across it, and this is ~400 unprojections — nothing next to detection.
+    static let rayColumns = 24
+    static let rayRows = 18
+    /// Past this the oldest half is thinned, keeping the whole walk represented
+    /// at lower density rather than only its end. ~1.4MB at the cap.
+    static let maxRays = 60_000
     /// Where the user has said "that is not a socket".
     ///
     /// Without this, deleting is theatre: detection keeps running, the same
@@ -194,6 +206,7 @@ final class FixtureCapture {
     func reset() {
         tracks.removeAll()
         sightings.removeAll()
+        rays.removeAll()
         framesAnalysed = 0
         rawDetections = 0
         rejectedByGeometry = 0
@@ -240,6 +253,12 @@ final class FixtureCapture {
             // matters — is it plate-sized, is it on a wall, is that wall
             // vertical, where exactly is it — is answered here.
             let depth = depthData.flatMap { DepthGate.snapshot($0) }
+            let sampled = depth.map {
+                FixtureCapture.sampleRays(
+                    $0, intrinsics: intrinsics,
+                    imageSize: (width: width, height: height), cameraTransform: transform
+                )
+            } ?? []
             var measured: [(SocketDetection, PlateGeometry)] = []
             if let depth {
                 // Measure the best few, not all of them. Each measurement fits a
@@ -269,6 +288,12 @@ final class FixtureCapture {
             let candidates = found.count
             let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
             DispatchQueue.main.async {
+                // A pass that began before `reset()` belongs to the last room.
+                // Drop it whole — its sockets, its stats, AND its `busy = false`,
+                // which would otherwise release a newer pass still in flight.
+                // (The generation was captured for exactly this and then never
+                // compared, so a pass could land its sockets in the next room.)
+                guard gen == self.generation else { return }
                 // Spend at most `dutyCycle` of the time here, measured rather
                 // than assumed, and clamped so neither a fast device hammers the
                 // CPU nor a slow one stops looking altogether.
@@ -277,6 +302,10 @@ final class FixtureCapture {
                 self.framesAnalysed += 1
                 self.rawDetections += candidates
                 self.depthAvailable = hasDepth
+                self.rays.append(contentsOf: sampled)
+                if self.rays.count > FixtureCapture.maxRays {
+                    self.rays = stride(from: 0, to: self.rays.count, by: 2).map { self.rays[$0] }
+                }
                 if hasDepth {
                     self.rejectedByGeometry += candidates - measured.count
                     let eye = SIMD3<Double>(
@@ -301,6 +330,42 @@ final class FixtureCapture {
                 self.busy = false
             }
         }
+    }
+
+    // MARK: Glass evidence
+
+    /// Unproject a sparse grid of the depth map into world rays (eye → hit).
+    private static func sampleRays(
+        _ depth: DepthFrame,
+        intrinsics: simd_float3x3,
+        imageSize: (width: Int, height: Int),
+        cameraTransform t: simd_float4x4
+    ) -> [(eye: SIMD3<Float>, hit: SIMD3<Float>)] {
+        guard depth.width > 0, depth.height > 0, imageSize.width > 0, imageSize.height > 0 else { return [] }
+        // Intrinsics are for the CAPTURED image; scale them to the depth map.
+        let sx = Float(depth.width) / Float(imageSize.width)
+        let sy = Float(depth.height) / Float(imageSize.height)
+        let fx = intrinsics.columns.0.x * sx, fy = intrinsics.columns.1.y * sy
+        let cx = intrinsics.columns.2.x * sx, cy = intrinsics.columns.2.y * sy
+        guard fx > 0, fy > 0 else { return [] }
+        let eye = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+
+        var out: [(eye: SIMD3<Float>, hit: SIMD3<Float>)] = []
+        out.reserveCapacity(rayColumns * rayRows)
+        for gy in 0..<rayRows {
+            let py = (Float(gy) + 0.5) * Float(depth.height) / Float(rayRows)
+            for gx in 0..<rayColumns {
+                let px = (Float(gx) + 0.5) * Float(depth.width) / Float(rayColumns)
+                let d = depth.at(Int(px), Int(py))
+                // Too close to say anything about a wall; 0 is "no reading".
+                guard d > 0.3 else { continue }
+                // Camera space (x right, y up, looking down −z) → world.
+                let local = SIMD4<Float>((px - cx) / fx * d, -(py - cy) / fy * d, -d, 1)
+                let world = t * local
+                out.append((eye: eye, hit: SIMD3<Float>(world.x, world.y, world.z)))
+            }
+        }
+        return out
     }
 
     // MARK: Tracking

@@ -16,8 +16,14 @@ struct FloorplanResultView: View {
     /// Which editing job the plan is doing. Sockets and furniture are edited
     /// with the same finger on the same canvas, so only one can be live at a
     /// time — otherwise a tap meant to delete a sofa drops a socket behind it.
-    enum EditMode { case none, sockets, furniture }
+    enum EditMode { case none, sockets, furniture, openings }
     @State private var editMode: EditMode = .none
+    /// Index into `scan.openings` of the door/window being edited.
+    @State private var selectedOpening: Int?
+    /// Opening picked up by the current drag, if the finger landed on one.
+    @State private var draggingOpening: Int?
+    /// What a tap on bare wall adds in the openings editor.
+    @State private var newOpeningKind: ScanOpening.Kind = .window
     /// Index into `scan.objects` of the scanned furniture being edited.
     @State private var selectedObject: Int?
     /// Index into `scan.fixtures` of the socket being edited.
@@ -53,6 +59,7 @@ struct FloorplanResultView: View {
                 floorplan: floorplan,
                 selectedFixture: editMode == .sockets ? selectedSocket : nil,
                 selectedObject: editMode == .furniture ? selectedObject : nil,
+                selectedOpening: editMode == .openings ? selectedOpening : nil,
                 onEdit: editMode == .none ? nil : { handleEdit($0, from: $1, to: $2) }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -61,6 +68,8 @@ struct FloorplanResultView: View {
                 if editMode != .none {
                     Text(editMode == .sockets
                          ? "Tap a wall to add · drag a socket to move it"
+                         : editMode == .openings
+                         ? "Tap a wall to add a \(newOpeningKind == .door ? "door" : "window") · drag one to slide it"
                          : "Tap a piece of furniture to select it, then remove it")
                         .font(.caption2)
                         .padding(.horizontal, 8).padding(.vertical, 5)
@@ -72,6 +81,25 @@ struct FloorplanResultView: View {
 
             if editMode == .sockets { socketInspector.padding(.horizontal, 16) }
             if editMode == .furniture { furnitureInspector.padding(.horizontal, 16) }
+            if editMode == .openings { openingInspector.padding(.horizontal, 16) }
+            if editMode == .none && glassSuggestions > 0 {
+                // Said out loud, because a dashed line on a plan is easy to miss
+                // and a mirror would have produced the same dashes.
+                Button {
+                    editMode = .openings
+                    selectedOpening = scan.openings.firstIndex { $0.glass == true }
+                } label: {
+                    Label(
+                        "\(glassSuggestions) possible glass pane\(glassSuggestions == 1 ? "" : "s") found — review",
+                        systemImage: "rectangle.dashed"
+                    )
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
 
             stats
                 .padding(.horizontal, 16)
@@ -90,6 +118,7 @@ struct FloorplanResultView: View {
                     Button {
                         editMode = editMode == .sockets ? .none : .sockets
                         selectedObject = nil
+                        selectedOpening = nil
                         if editMode != .sockets { selectedSocket = nil }
                     } label: {
                         Label(
@@ -109,6 +138,7 @@ struct FloorplanResultView: View {
                     Button {
                         editMode = editMode == .furniture ? .none : .furniture
                         selectedSocket = nil
+                        selectedOpening = nil
                         if editMode != .furniture { selectedObject = nil }
                     } label: {
                         Label(
@@ -120,7 +150,28 @@ struct FloorplanResultView: View {
                     .buttonStyle(.bordered)
                     .tint(editMode == .furniture ? .accentColor : .secondary)
                     .controlSize(.large)
-                    .disabled(scan.objects.isEmpty)
+                    // Never disabled while it reads "Done": removing the last
+                    // piece used to leave the editor stuck open.
+                    .disabled(scan.objects.isEmpty && editMode != .furniture)
+
+                    // Doors and windows — above all the glass the scanner could
+                    // not see: a sliding door or a floor-to-ceiling pane comes
+                    // back from RoomPlan as plain wall.
+                    Button {
+                        editMode = editMode == .openings ? .none : .openings
+                        selectedSocket = nil
+                        selectedObject = nil
+                        if editMode != .openings { selectedOpening = nil }
+                    } label: {
+                        Label(
+                            editMode == .openings ? "Done" : "Windows",
+                            systemImage: editMode == .openings ? "checkmark.circle" : "rectangle.split.2x1"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(editMode == .openings ? .accentColor : .secondary)
+                    .controlSize(.large)
                 }
 
                 // The handoff people actually need: scan here, design on a
@@ -230,8 +281,181 @@ struct FloorplanResultView: View {
             stat("Perimeter", Units.length(floorplan.perimeterMm, scan.unitSystem))
             stat("Ceiling", Units.length(floorplan.height, scan.unitSystem))
             stat("Walls", "\(floorplan.walls.count)")
-            if !floorplan.openings.isEmpty { stat("Openings", "\(floorplan.openings.count)") }
+            // Always shown, 0 included: a room with windows that reports none
+            // is how anyone notices the glass was missed (and adds it by hand).
+            stat("Openings", "\(floorplan.openings.count)")
             stat("Sockets", "\(socketCount)")
+        }
+    }
+
+    // MARK: Doors & windows
+
+    private var glassSuggestions: Int { scan.openings.filter { $0.glass == true }.count }
+
+    /// Common sizes for a hand-added opening; the inspector adjusts from there.
+    private static func newOpening(_ kind: ScanOpening.Kind) -> (width: Double, height: Double, sill: Double) {
+        switch kind {
+        case .door: return (900, 2100, 0)
+        case .archway: return (900, 2100, 0)
+        case .window: return (1200, 1200, 900)
+        }
+    }
+
+    private func wallLength(_ wall: Int) -> Double {
+        let poly = scan.polygon
+        guard poly.indices.contains(wall) else { return 0 }
+        return Geo.distance(poly[wall], poly[(wall + 1) % poly.count])
+    }
+
+    /// Land on an opening and you are sliding it along its wall; tap bare wall
+    /// and one is added there; tap open floor and the selection clears.
+    private func handleOpeningEdit(_ phase: FloorplanCanvas.EditPhase, from start: Vec2, to current: Vec2) {
+        switch phase {
+        case .changed:
+            if !dragClaimed {
+                dragClaimed = true
+                draggingOpening = openingIndex(near: start)
+                if let i = draggingOpening { selectedOpening = i }
+            }
+            if let i = draggingOpening, Geo.distance(start, current) > Self.tapSlopMm {
+                slideOpening(i, to: current)
+            }
+        case .ended:
+            defer { dragClaimed = false; draggingOpening = nil }
+            if !dragClaimed { draggingOpening = openingIndex(near: start) }
+            let moved = Geo.distance(start, current) > Self.tapSlopMm
+            if let i = draggingOpening {
+                if moved { slideOpening(i, to: current) }
+                selectedOpening = i
+            } else if !moved {
+                guard let anchor = wallAnchor(for: current) else { selectedOpening = nil; return }
+                let size = Self.newOpening(newOpeningKind)
+                let length = wallLength(anchor.wall)
+                let width = min(size.width, length)
+                scan.openings.append(ScanOpening(
+                    type: newOpeningKind,
+                    wall: anchor.wall,
+                    offset: min(max(anchor.offset - width / 2, 0), max(0, length - width)),
+                    width: width,
+                    height: size.height,
+                    sill: size.sill
+                ))
+                selectedOpening = scan.openings.count - 1
+            }
+        }
+    }
+
+    /// Openings stay on their own wall: slide along it, never onto another.
+    private func slideOpening(_ i: Int, to point: Vec2) {
+        guard scan.openings.indices.contains(i) else { return }
+        let op = scan.openings[i]
+        let poly = scan.polygon
+        guard poly.indices.contains(op.wall) else { return }
+        let a = poly[op.wall], b = poly[(op.wall + 1) % poly.count]
+        let along = Geo.project(point, onto: a, b).offset
+        let length = Geo.distance(a, b)
+        scan.openings[i].offset = min(max(along - op.width / 2, 0), max(0, length - op.width))
+    }
+
+    /// The opening under a point: within grabbing distance of its span.
+    private func openingIndex(near point: Vec2) -> Int? {
+        let poly = scan.polygon
+        var best: (index: Int, distance: Double)?
+        for (i, op) in scan.openings.enumerated() where poly.indices.contains(op.wall) {
+            let a = poly[op.wall], b = poly[(op.wall + 1) % poly.count]
+            let dir = Geo.normalize(Geo.sub(b, a))
+            let p0 = Vec2(x: a.x + dir.x * op.offset, z: a.z + dir.z * op.offset)
+            let p1 = Vec2(x: p0.x + dir.x * op.width, z: p0.z + dir.z * op.width)
+            let d = Geo.distanceToSegment(point, p0, p1)
+            if d <= Self.hitRadiusMm, best == nil || d < best!.distance { best = (i, d) }
+        }
+        return best?.index
+    }
+
+    @ViewBuilder
+    private var openingInspector: some View {
+        if let i = selectedOpening, scan.openings.indices.contains(i) {
+            let op = scan.openings[i]
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Picker("Type", selection: Binding(
+                        get: { scan.openings[i].type },
+                        set: { kind in
+                            scan.openings[i].type = kind
+                            scan.openings[i].sill = kind == .window
+                                ? (scan.openings[i].sill.flatMap { $0 > 0 ? $0 : nil } ?? 900)
+                                : 0
+                        }
+                    )) {
+                        Text("Window").tag(ScanOpening.Kind.window)
+                        Text("Door").tag(ScanOpening.Kind.door)
+                        Text("Opening").tag(ScanOpening.Kind.archway)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if op.glass == true {
+                    Text("Seen through during the scan — probably glass. A mirror looks the same to the sensor, so keep it or remove it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 14) {
+                    lengthStepper("Width", value: op.width) { v in
+                        let length = wallLength(op.wall)
+                        scan.openings[i].width = min(max(v, 200), length)
+                        scan.openings[i].offset = min(scan.openings[i].offset, max(0, length - scan.openings[i].width))
+                    }
+                    lengthStepper("Height", value: op.height) { scan.openings[i].height = max($0, 200) }
+                    if op.type == .window {
+                        lengthStepper("Sill", value: op.sill ?? 0) { scan.openings[i].sill = max($0, 0) }
+                    }
+                }
+                HStack {
+                    if op.glass == true {
+                        Button("Keep it") { scan.openings[i].glass = nil }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        scan.openings.remove(at: i)
+                        selectedOpening = nil
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        } else {
+            HStack {
+                Text("Tap a wall to add")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Picker("Adds", selection: $newOpeningKind) {
+                    Text("Window").tag(ScanOpening.Kind.window)
+                    Text("Door").tag(ScanOpening.Kind.door)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+                Spacer()
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    /// A ±50mm stepper with the value in the scan's units.
+    private func lengthStepper(_ label: String, value: Double, set: @escaping (Double) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased()).font(.system(size: 9)).foregroundStyle(.secondary)
+            Stepper(
+                Units.length(value, scan.unitSystem),
+                onIncrement: { set(value + 50) },
+                onDecrement: { set(value - 50) }
+            )
+            .font(.footnote.monospacedDigit())
         }
     }
 
@@ -272,6 +496,10 @@ struct FloorplanResultView: View {
             if phase == .ended, Geo.distance(start, current) <= Self.tapSlopMm {
                 selectedObject = objectIndex(containing: start)
             }
+            return
+        }
+        if editMode == .openings {
+            handleOpeningEdit(phase, from: start, to: current)
             return
         }
         switch phase {
@@ -362,7 +590,7 @@ struct FloorplanResultView: View {
         if let i = selectedObject, scan.objects.indices.contains(i) {
             let object = scan.objects[i]
             HStack(spacing: 12) {
-                Label(object.category, systemImage: "shippingbox")
+                Label(object.category, systemImage: object.isColumn ? "cylinder" : "shippingbox")
                     .font(.subheadline.weight(.semibold))
                 Text("\(Units.length(object.width, scan.unitSystem)) × \(Units.length(object.depth, scan.unitSystem))")
                     .font(.footnote.monospacedDigit())
@@ -371,6 +599,7 @@ struct FloorplanResultView: View {
                 Button(role: .destructive) {
                     scan.objects.remove(at: i)
                     selectedObject = nil
+                    if scan.objects.isEmpty { editMode = .none }
                 } label: {
                     Label("Remove", systemImage: "trash")
                 }
@@ -380,15 +609,23 @@ struct FloorplanResultView: View {
             .padding(12)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
         } else {
+            let furniture = scan.objects.filter { !$0.isColumn }.count
+            let columns = scan.objects.count - furniture
             HStack {
-                Text("\(scan.objects.count) pieces of furniture detected — tap one to remove it")
+                Text(columns > 0
+                     ? "\(furniture) pieces of furniture, \(columns) column\(columns == 1 ? "" : "s") — tap one to remove it"
+                     : "\(furniture) pieces of furniture detected — tap one to remove it")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if !scan.objects.isEmpty {
+                if furniture > 0 {
                     Button(role: .destructive) {
-                        scan.objects.removeAll()
+                        // Furniture only. A column is structure: it is not going
+                        // out with the sofa, and removing it with one tap meant
+                        // cabinets planned straight through it.
+                        scan.objects.removeAll { !$0.isColumn }
                         selectedObject = nil
+                        if scan.objects.isEmpty { editMode = .none }
                     } label: {
                         Text("Remove all")
                     }

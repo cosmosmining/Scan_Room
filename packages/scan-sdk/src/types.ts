@@ -39,6 +39,12 @@ export interface ScanOpening {
   height: Millimeters;
   /** Bottom of the opening above the floor (0 for doors). */
   sill?: Millimeters;
+  /**
+   * Found from depth readings that went THROUGH the wall, not recognised by
+   * RoomPlan: probably glass — but a mirror looks the same to a depth sensor,
+   * so it is a suggestion the user can remove, not a measurement.
+   */
+  glass?: boolean;
 }
 
 /**
@@ -80,15 +86,23 @@ export interface ScanFixture {
 
 /** An object detected by a scanner that returns furniture (e.g. RoomPlan). */
 export interface ScanObject {
+  /** RoomPlan's category ("sofa", "table", …), or `"column"` for a pillar. */
   category: string;
   /** Centre of the object's footprint (millimetres). */
   center: Vec2;
   width: Millimeters;
   depth: Millimeters;
-  /** Y rotation, radians. */
+  /**
+   * Yaw, radians, in the PLAN convention: the object's width axis points along
+   * (cos r, sin r) in (x, z) — what RoomPlan's transform gives. That is the
+   * opposite sense to a 3D yaw about +Y (three.js, RealityKit), so a 3D scene
+   * uses `-rotation`.
+   */
   rotation: number;
   /** Height of the object (millimetres), when the sensor reports it. */
   height?: Millimeters;
+  /** Footprint shape, set for columns: a round column is not a box. */
+  shape?: 'round' | 'box';
 }
 
 /**

@@ -234,6 +234,25 @@ The same logic, in TypeScript, with tests you can run right now:
 npx vitest run src/systems/scan
 ```
 
+### Field-test fixes — what to re-test on site
+
+Run `xcodegen generate` again first: the Debug build is now compiled with `-O`,
+which is what took detection from ~3200 ms per frame to something usable. The
+number is on screen while scanning — please send it back.
+
+| Report | What changed | How to check it |
+|---|---|---|
+| 有玻璃偵測不到 — glass missed | LiDAR sees *through* clear glass. Depth readings that pass through a finished wall are now collected during the walk; patches of wall the sensor saw through become **suggested** windows/doors, drawn **dashed**. A mirror looks identical to the sensor, so each one can be kept or removed. Anything still missed: **Windows** button → tap the wall. | Scan a room with a sliding glass door. The plan shows a dashed opening and a "possible glass pane found — review" button. |
+| LED 燈會跑來跑去 — LEDs taken for sockets | A light is a *source*: it clips the sensor. A candidate that is both clipped and far brighter than the wall is rejected. Only the best 12 candidates are measured per frame. | Point at LED strips / downlights: no socket markers. Real sockets beside them still confirm. |
+| 鞋子 — floor plan moves around shoes | Walls are built from the **outermost** fragment (clutter can only ever be in front of a wall, never behind it). Surfaces lower than 90 cm (shoe racks, boxes) are no longer walls. Corners come from where wall lines meet. | Scan a wall with shoes along it: the wall stays straight and in place. |
+| 家具可以 delete | **Furniture** button on the plan → tap → Remove / Remove all. Same on the web (select → Delete). | |
+| Round pillar | Pillars are taken out of the wall outline (they used to make a spike) and kept as **columns**: circles on the plan, cylinders in 3D, floor to ceiling. "Remove all" furniture keeps them. iOS 17's curved surfaces are sampled into arcs. | Scan a room with a round column. |
+
+Also fixed: window sill heights (were measured from where the scan started, not
+from the floor), furniture on the 2D plans turning the opposite way to 3D, a
+socket pass from one room landing in the next, and door cuts on the whole-house
+plan drawn half a door early.
+
 ### The web configurator
 
 | Try this | Where |
@@ -244,6 +263,8 @@ npx vitest run src/systems/scan
 | Turn something | Select it, drag the blue handle on its corner |
 | Reshape the room | 2D → **Edit walls** → drag a corner. The walls follow and the units re-pack |
 | Add a socket | 2D → tap a bare wall. Drag it to move it; it re-anchors round corners |
+| Add a window or door | 2D → **Tap wall adds: Window / Door** → tap the wall. Tap one to set type, width, height, sill, or remove it |
+| Review suggested glass | Dashed openings came from the scanner seeing through the wall → tap → **Keep it** or **Remove** |
 | Change colour | Select something → **Change colour** (cyan, bottom right) → tap a swatch |
 | Recolour the room | Style → **Colour** → Walls / Floor / Ceiling |
 | Show a person for scale | **Avatar** in the viewer bar (off by default) |

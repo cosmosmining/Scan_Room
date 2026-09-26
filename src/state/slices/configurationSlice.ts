@@ -203,11 +203,18 @@ export const createConfigurationSlice: StateCreator<
           id: `scan_${i}_${o.category}`,
           itemId: SCANNED_ITEM_ID,
           position: { x: o.center.x, z: o.center.z },
-          // The scan's yaw is about +Y in the frame the rest of the app uses.
-          rotationY: o.rotation,
-          size: { width: o.width, height: o.height ?? 700, depth: o.depth },
+          // The scan's yaw is in the PLAN sense (width axis along (cos, sin));
+          // a placed piece's is a 3D yaw about +Y, which turns the other way.
+          rotationY: -o.rotation,
+          size: {
+            width: o.width,
+            // A column runs floor to ceiling whatever the scan measured.
+            height: o.category === 'column' ? geometry.height : o.height ?? 700,
+            depth: o.depth,
+          },
           label: o.category,
           scanned: true,
+          ...(o.category === 'column' ? { column: o.shape === 'round' ? 'round' as const : 'box' as const } : {}),
         })),
       ],
       designSelection: null,

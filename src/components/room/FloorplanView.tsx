@@ -7,6 +7,8 @@ import {
   formatLength,
   roomToFloorplan,
 } from '@/systems/scan/floorplan';
+import type { ScanObject } from '@mozu/scan-sdk';
+import { placedSize } from '@/systems/furniture/catalog';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -25,8 +27,31 @@ const SOURCE_LABEL: Record<string, string> = {
  */
 export function FloorplanView() {
   const room = useConfiguratorStore((s) => s.room);
+  const designItems = useConfiguratorStore((s) => s.designItems);
 
-  const floorplan = useMemo(() => roomToFloorplan(room), [room]);
+  // Columns are part of the room, so the measured plan shows them. (Furniture
+  // is not: this is the plan of the space, not of what is standing in it.)
+  const columns = useMemo<ScanObject[]>(
+    () =>
+      designItems
+        .filter((i) => i.column)
+        .map((i) => {
+          const size = placedSize(i);
+          return {
+            category: 'column',
+            center: { x: i.position.x, z: i.position.z },
+            width: size.width,
+            depth: size.depth,
+            // A placed piece's yaw is 3D-sense; a ScanObject's is plan-sense.
+            rotation: -i.rotationY,
+            height: size.height,
+            shape: i.column,
+          };
+        }),
+    [designItems],
+  );
+
+  const floorplan = useMemo(() => roomToFloorplan(room, columns), [room, columns]);
   const svg = useMemo(() => floorplanToSvg(floorplan, { theme: 'dark' }), [floorplan]);
 
   const download = () => {

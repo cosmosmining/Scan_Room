@@ -100,7 +100,8 @@ export function buildMassing(
       kind: 'object',
       center: { x: obj.center.x, y: h / 2, z: obj.center.z },
       size: { x: obj.width, y: h, z: obj.depth },
-      rotationY: obj.rotation,
+      // Plan-convention yaw → 3D yaw (see ScanObject.rotation).
+      rotationY: -obj.rotation,
       label: obj.category,
     });
   }

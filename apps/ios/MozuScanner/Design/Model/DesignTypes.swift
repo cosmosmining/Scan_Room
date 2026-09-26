@@ -176,6 +176,19 @@ struct DesignSocket: Identifiable, Hashable {
     var manual: Bool
 }
 
+/// A structural column standing in the room, in metres. Floor to ceiling.
+struct DesignColumn: Identifiable, Hashable {
+    let id: Int
+    /// Footprint centre on the floor plane (x, z).
+    var center: SIMD2<Float>
+    var round: Bool
+    /// Across, metres; for a round column width == depth == diameter.
+    var width: Float
+    var depth: Float
+    /// Yaw about +Y in the 3D sense (the plan's `ScanObject.rotation` negated).
+    var rotationY: Float
+}
+
 struct DesignRoom {
     /// Closed floor polygon (metres), CCW.
     var footprint: [SIMD2<Float>]
@@ -184,6 +197,9 @@ struct DesignRoom {
     var openings: [DesignOpening]
     /// Sockets on the walls — detected during the scan or added by hand.
     var sockets: [DesignSocket] = []
+    /// Columns the scan found. Structure, so they are part of the room rather
+    /// than furniture in it.
+    var columns: [DesignColumn] = []
 
     var wallFinish: SurfaceFinish
     var floorFinish: SurfaceFinish
@@ -245,6 +261,17 @@ struct DesignRoom {
                 offset: Float(f.offset) * MM_TO_M,
                 height: Float(f.height) * MM_TO_M,
                 manual: f.source == .manual
+            )
+        }
+        self.columns = scan.objects.enumerated().compactMap { idx, o in
+            guard o.isColumn else { return nil }
+            return DesignColumn(
+                id: idx,
+                center: SIMD2<Float>(Float(o.center.x) * MM_TO_M, Float(o.center.z) * MM_TO_M),
+                round: o.isRound,
+                width: Float(o.width) * MM_TO_M,
+                depth: Float(o.depth) * MM_TO_M,
+                rotationY: -Float(o.rotation)
             )
         }
         self.wallFinish = wallFinish

@@ -52,6 +52,14 @@ enum Room3DBuilder {
             root.addChild(entity)
         }
 
+        // Columns, floor to ceiling, in the wall finish — they are the same
+        // plaster as the walls in every room that has them.
+        for column in room.columns {
+            let entity = buildColumn(column, height: room.height, finish: room.wallFinish, swatches: swatches)
+            entity.name = "column_\(column.id)"
+            root.addChild(entity)
+        }
+
         if let ceiling = buildCeiling(footprint,
                                       height: room.height,
                                       finish: room.ceilingFinish,
@@ -61,6 +69,89 @@ enum Room3DBuilder {
         }
 
         return root
+    }
+
+    // MARK: - Columns
+
+    private static func buildColumn(_ column: DesignColumn,
+                                    height: Float,
+                                    finish: SurfaceFinish,
+                                    swatches: [Swatch]) -> Entity {
+        let material = MaterialFactory.material(for: finish, swatches: swatches)
+        let h = max(height, 0.001)
+        let entity: ModelEntity
+        if column.round, let mesh = cylinderMesh(radius: column.width / 2, height: h) {
+            entity = ModelEntity(mesh: mesh, materials: [material])
+        } else {
+            entity = ModelEntity(
+                mesh: .generateBox(width: column.width, height: h, depth: column.depth),
+                materials: [material]
+            )
+            entity.position.y = h / 2
+        }
+        let container = Entity()
+        container.addChild(entity)
+        container.position = SIMD3<Float>(column.center.x, 0, column.center.y)
+        container.orientation = simd_quatf(angle: column.rotationY, axis: SIMD3<Float>(0, 1, 0))
+        return container
+    }
+
+    /// An open-ended smooth cylinder standing on y = 0, with a cap on top for
+    /// the cutaway view. Built by hand because `generateCylinder` needs iOS 18.
+    /// UVs are metres (around × up) so the finish tiles as it does on the walls.
+    private static func cylinderMesh(radius: Float, height: Float, segments: Int = 40) -> MeshResource? {
+        guard radius > 0.001 else { return nil }
+        var positions: [SIMD3<Float>] = []
+        var normals: [SIMD3<Float>] = []
+        var uvs: [SIMD2<Float>] = []
+        var indices: [UInt32] = []
+
+        // Emit a triangle wound so its right-hand normal agrees with `facing` —
+        // the same rule `buildWall` uses — rather than trusting hand-derived order.
+        func triangle(_ a: UInt32, _ b: UInt32, _ c: UInt32, facing: SIMD3<Float>) {
+            let g = simd_cross(positions[Int(b)] - positions[Int(a)], positions[Int(c)] - positions[Int(a)])
+            indices.append(contentsOf: simd_dot(g, facing) >= 0 ? [a, b, c] : [a, c, b])
+        }
+
+        for i in 0...segments {
+            let theta = Float(i) / Float(segments) * 2 * .pi
+            let n = SIMD3<Float>(cos(theta), 0, sin(theta))
+            let u = theta * radius
+            positions.append(n * radius)
+            positions.append(n * radius + SIMD3<Float>(0, height, 0))
+            normals.append(contentsOf: [n, n])
+            uvs.append(contentsOf: [SIMD2<Float>(u, 0), SIMD2<Float>(u, height)])
+        }
+        for i in 0..<segments {
+            let b0 = UInt32(i * 2), t0 = b0 + 1, b1 = b0 + 2, t1 = b0 + 3
+            let mid = Float(i) + 0.5
+            let out = SIMD3<Float>(cos(mid / Float(segments) * 2 * .pi), 0, sin(mid / Float(segments) * 2 * .pi))
+            triangle(b0, b1, t1, facing: out)
+            triangle(b0, t1, t0, facing: out)
+        }
+
+        let up = SIMD3<Float>(0, 1, 0)
+        let centre = UInt32(positions.count)
+        positions.append(SIMD3<Float>(0, height, 0))
+        normals.append(up)
+        uvs.append(.zero)
+        let rim = UInt32(positions.count)
+        for i in 0...segments {
+            let theta = Float(i) / Float(segments) * 2 * .pi
+            positions.append(SIMD3<Float>(cos(theta) * radius, height, sin(theta) * radius))
+            normals.append(up)
+            uvs.append(SIMD2<Float>(cos(theta) * radius, sin(theta) * radius))
+        }
+        for i in 0..<UInt32(segments) {
+            triangle(centre, rim + i, rim + i + 1, facing: up)
+        }
+
+        var descriptor = MeshDescriptor(name: "column")
+        descriptor.positions = MeshBuffers.Positions(positions)
+        descriptor.normals = MeshBuffers.Normals(normals)
+        descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs)
+        descriptor.primitives = .triangles(indices)
+        return try? MeshResource.generate(from: [descriptor])
     }
 
     // MARK: - Sockets
@@ -283,7 +374,7 @@ enum Room3DBuilder {
 
     /// Clamp openings onto the wall, sort them, and drop/merge degenerate overlaps.
     /// `DesignOpening.offset` is the distance from the wall's start vertex to the
-    /// opening's CENTRE (that is what `FloorplanBuilder` records).
+    /// opening's LEADING edge (the RoomScan contract `FloorplanBuilder` records).
     private static func resolveSpans(_ openings: [DesignOpening],
                                      wallLength: Float,
                                      wallHeight: Float) -> [OpeningSpan] {

@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createDefaultRoom } from '@/lib/defaults';
 import { clampToRoom, pointInPolygon } from '@/state/slices/designSlice';
-import { FURNITURE_ITEMS, furnitureItem } from '../catalog';
+import * as THREE from 'three';
+import { FURNITURE_ITEMS, furnitureItem, yawOffset } from '../catalog';
 import { furnitureParts } from '../parts';
 import { recommendFurniture } from '../recommend';
 
@@ -136,5 +137,31 @@ describe('recommendFurniture', () => {
 
   it('returns nothing for a room with no usable walls', () => {
     expect(recommendFurniture({ ...room, walls: [] })).toEqual([]);
+  });
+});
+
+describe('yawOffset turns exactly as three.js does', () => {
+  // The plan and the 3D view must agree on which way a piece faces at EVERY
+  // angle, not just at 90° steps where a box looks the same either way.
+  for (const deg of [0, 30, 90, 135, -60, 200]) {
+    it(`agrees with rotation.y at ${deg}°`, () => {
+      const yaw = (deg * Math.PI) / 180;
+      const object = new THREE.Object3D();
+      object.rotation.y = yaw;
+      for (const local of [{ x: 1000, z: 0 }, { x: 0, z: 400 }, { x: 600, z: -250 }]) {
+        const expected = new THREE.Vector3(local.x, 0, local.z).applyQuaternion(object.quaternion);
+        const got = yawOffset(local, yaw);
+        expect(got.x).toBeCloseTo(expected.x, 6);
+        expect(got.z).toBeCloseTo(expected.z, 6);
+      }
+    });
+  }
+
+  it('puts a recommended piece’s front towards the room', () => {
+    // The recommender faces a piece on the left wall (inward +X) at
+    // atan2(ix, iz); its front (local +Z) must then point along +X on the plan.
+    const front = yawOffset({ x: 0, z: 1 }, Math.atan2(1, 0));
+    expect(front.x).toBeCloseTo(1, 6);
+    expect(front.z).toBeCloseTo(0, 6);
   });
 });

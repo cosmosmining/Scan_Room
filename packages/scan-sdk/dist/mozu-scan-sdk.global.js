@@ -21,25 +21,34 @@ var MozuScan = (() => {
   // src/index.ts
   var src_exports = {};
   __export(src_exports, {
+    FIXTURE_GLYPH: () => FIXTURE_GLYPH,
+    FIXTURE_LABEL: () => FIXTURE_LABEL,
     MozuScanner: () => MozuScanner,
+    PIPE_DIAMETER_BANDS: () => PIPE_DIAMETER_BANDS,
+    PIPE_TYPES: () => PIPE_TYPES,
     ROOMSCAN_SCHEMA: () => ROOMSCAN_SCHEMA,
     THEMES: () => THEMES,
     add: () => add,
+    apparentWidthToMm: () => apparentWidthToMm,
     bounds: () => bounds,
     buildFloorplan: () => buildFloorplan,
     buildMassing: () => buildMassing,
     captureRotationFrames: () => captureRotationFrames,
     centroid: () => centroid,
+    classifyPipe: () => classifyPipe,
+    describeFixture: () => describeFixture,
     distance: () => distance,
     dot: () => dot,
     ensureCCW: () => ensureCCW,
     estimateRoomFromImages: () => estimateRoomFromImages,
+    fixtureLabel: () => fixtureLabel,
     floorplanCenter: () => floorplanCenter,
     floorplanToSvg: () => floorplanToSvg,
     formatArea: () => formatArea,
     formatLength: () => formatLength,
     formatLengthShort: () => formatLengthShort,
     handoffUrl: () => handoffUrl,
+    isPipe: () => isPipe,
     isWebXrSupported: () => isWebXrSupported,
     length: () => length,
     midpoint: () => midpoint,
@@ -168,6 +177,81 @@ var MozuScan = (() => {
     return `${(mm2 / MM2_PER_SQM).toFixed(1)} m\xB2`;
   }
 
+  // src/fixtures.ts
+  var FIXTURE_LABEL = {
+    socket: "Socket",
+    switch: "Switch",
+    water: "Water",
+    waste: "Waste",
+    gas: "Gas",
+    vent: "Vent",
+    radiator: "Radiator"
+  };
+  var FIXTURE_GLYPH = {
+    socket: "S",
+    switch: "W",
+    water: "H",
+    waste: "D",
+    gas: "G",
+    vent: "V",
+    radiator: "R"
+  };
+  var PIPE_TYPES = ["water", "waste", "gas"];
+  var isPipe = (type) => PIPE_TYPES.includes(type);
+  var PIPE_DIAMETER_BANDS = {
+    water: { min: 8, max: 30 },
+    gas: { min: 20, max: 36 },
+    waste: { min: 32, max: 130 }
+  };
+  function classifyPipe(diameterMm, cues = {}) {
+    if (diameterMm >= PIPE_DIAMETER_BANDS.waste.min) {
+      const big = diameterMm >= 80;
+      return {
+        type: "waste",
+        confidence: big ? 0.92 : 0.8,
+        reason: `${Math.round(diameterMm)}mm \u2014 too fat for supply, ${big ? "soil stack" : "waste branch"}`
+      };
+    }
+    if (cues.yellowness !== void 0 && cues.yellowness > 0.45) {
+      return {
+        type: "gas",
+        confidence: 0.78,
+        reason: `${Math.round(diameterMm)}mm and yellow \u2014 gas convention`
+      };
+    }
+    if (diameterMm >= PIPE_DIAMETER_BANDS.gas.min && cues.vertical === false && (cues.heightMm ?? 9999) < 400) {
+      return {
+        type: "gas",
+        confidence: 0.6,
+        reason: `${Math.round(diameterMm)}mm running low and horizontal \u2014 likely gas service`
+      };
+    }
+    return {
+      type: "water",
+      confidence: diameterMm <= 30 ? 0.72 : 0.55,
+      reason: `${Math.round(diameterMm)}mm small bore \u2014 supply pipework`
+    };
+  }
+  function apparentWidthToMm(pixels, distanceMm, fovY, imageWidthPx, imageHeightPx) {
+    if (pixels <= 0 || distanceMm <= 0 || imageWidthPx <= 0 || imageHeightPx <= 0) return 0;
+    const aspect = imageWidthPx / imageHeightPx;
+    const tanX = Math.tan(fovY / 2) * aspect;
+    return 2 * distanceMm * tanX * (pixels / imageWidthPx);
+  }
+  function fixtureLabel(fixture) {
+    if (fixture.label) return fixture.label;
+    const base = FIXTURE_LABEL[fixture.type] ?? fixture.type;
+    if (isPipe(fixture.type) && fixture.diameterMm && fixture.diameterMm > 0) {
+      return `${base} \u2300${Math.round(fixture.diameterMm)}`;
+    }
+    return base;
+  }
+  function describeFixture(fixture) {
+    const pct = Math.round(Math.max(0, Math.min(1, fixture.confidence)) * 100);
+    const how = fixture.source === "manual" ? "added by hand" : `${pct}% confident`;
+    return `${fixtureLabel(fixture)} \xB7 ${Math.round(fixture.height)}mm high \xB7 ${how}`;
+  }
+
   // src/floorplan.ts
   function buildFloorplan(input) {
     const unitSystem = input.unitSystem;
@@ -194,12 +278,14 @@ var MozuScan = (() => {
         outward
       };
     });
+    const sourcePolygon = input.polygon.map((p) => ({ x: p.x, z: p.z }));
     const b = bounds(points);
     return {
       points,
       walls,
-      openings,
+      openings: remapOpenings(openings, sourcePolygon, walls),
       objects,
+      fixtures: placeFixtures(input.fixtures ?? [], sourcePolygon, walls),
       areaMm2: polygonArea(points),
       perimeterMm: perimeter(points),
       height,
@@ -208,6 +294,58 @@ var MozuScan = (() => {
       source,
       confidence
     };
+  }
+  function pointOnEdge(poly, edge, offset) {
+    if (!Number.isInteger(edge) || edge < 0 || edge >= poly.length) return null;
+    const start = poly[edge];
+    const end = poly[(edge + 1) % poly.length];
+    const len = distance(start, end);
+    if (len < 1e-6) return null;
+    const dir = normalize(sub(end, start));
+    return add(start, scale(dir, Math.max(0, Math.min(offset, len))));
+  }
+  function nearestWall(p, walls) {
+    let best = null;
+    for (const w of walls) {
+      if (w.length < 1e-6) continue;
+      const dir = normalize(sub(w.end, w.start));
+      const t = Math.max(0, Math.min(w.length, dot2(sub(p, w.start), dir)));
+      const proj = add(w.start, scale(dir, t));
+      const d = distance(p, proj);
+      if (!best || d < best.d) best = { wall: w.index, offset: t, d };
+    }
+    return best ? { wall: best.wall, offset: best.offset } : null;
+  }
+  var dot2 = (a, b) => a.x * b.x + a.z * b.z;
+  function remapOpenings(openings, source, walls) {
+    const out = [];
+    for (const op of openings) {
+      const mid = pointOnEdge(source, op.wall, op.offset + op.width / 2);
+      if (!mid) continue;
+      const hit = nearestWall(mid, walls);
+      if (!hit) continue;
+      out.push({ ...op, wall: hit.wall, offset: Math.max(0, hit.offset - op.width / 2) });
+    }
+    return out;
+  }
+  function placeFixtures(fixtures, source, walls) {
+    const out = [];
+    for (const f of fixtures) {
+      const p = pointOnEdge(source, f.wall, f.offset);
+      if (!p) continue;
+      const hit = nearestWall(p, walls);
+      if (!hit) continue;
+      const wall = walls[hit.wall];
+      out.push({
+        ...f,
+        wall: hit.wall,
+        offset: hit.offset,
+        point: p,
+        inward: { x: -wall.outward.x, z: -wall.outward.z },
+        text: fixtureLabel(f)
+      });
+    }
+    return out;
   }
   var floorplanCenter = (fp) => centroid(fp.points);
   function polygonScan(polygon, height, unitSystem, source = "manual", confidence = 0.7) {
@@ -296,7 +434,8 @@ var MozuScan = (() => {
         kind: "object",
         center: { x: obj.center.x, y: h / 2, z: obj.center.z },
         size: { x: obj.width, y: h, z: obj.depth },
-        rotationY: obj.rotation,
+        // Plan-convention yaw → 3D yaw (see ScanObject.rotation).
+        rotationY: -obj.rotation,
         label: obj.category
       });
     }
@@ -319,7 +458,8 @@ var MozuScan = (() => {
     labelText: "#ffffff",
     area: "#374151",
     object: "#e6e1d8",
-    accent: "#2563eb"
+    accent: "#2563eb",
+    fixture: "#111827"
   };
   var DARK = {
     paper: "#0a0a0a",
@@ -330,7 +470,8 @@ var MozuScan = (() => {
     labelText: "#0a0a0a",
     area: "#d1d5db",
     object: "#2a2a2e",
-    accent: "#22d3ee"
+    accent: "#22d3ee",
+    fixture: "#f9fafb"
   };
   var THEMES = { light: LIGHT, dark: DARK };
   var esc = (s) => s.replace(
@@ -344,6 +485,7 @@ var MozuScan = (() => {
     const showDims = opts.dimensions !== false;
     const showArea = opts.showArea !== false;
     const showObjects = opts.showObjects !== false;
+    const showFixtures = opts.showFixtures !== false;
     const span = Math.max(fp.bounds.width, fp.bounds.depth) || 1e3;
     const pad = opts.padding ?? Math.max(span * 0.18, 700);
     const font = clamp(span / 20, 130, 360);
@@ -369,6 +511,12 @@ var MozuScan = (() => {
     if (showObjects) {
       for (const o of fp.objects) {
         const deg = o.rotation * 180 / Math.PI;
+        if (o.category === "column") {
+          parts.push(
+            o.shape === "round" ? `<circle cx="${fmt(o.center.x)}" cy="${fmt(o.center.z)}" r="${fmt(o.width / 2)}" fill="${theme.wall}"/>` : `<g transform="translate(${fmt(o.center.x)} ${fmt(o.center.z)}) rotate(${fmt(deg)})"><rect x="${fmt(-o.width / 2)}" y="${fmt(-o.depth / 2)}" width="${fmt(o.width)}" height="${fmt(o.depth)}" fill="${theme.wall}"/></g>`
+          );
+          continue;
+        }
         parts.push(
           `<g transform="translate(${fmt(o.center.x)} ${fmt(o.center.z)}) rotate(${fmt(deg)})"><rect x="${fmt(-o.width / 2)}" y="${fmt(-o.depth / 2)}" width="${fmt(o.width)}" height="${fmt(o.depth)}" rx="${fmt(thin * 1.5)}" fill="${theme.object}" stroke="${theme.dimension}" stroke-width="${fmt(thin)}"/></g>`
         );
@@ -380,6 +528,9 @@ var MozuScan = (() => {
     for (const op of fp.openings) {
       const wall = fp.walls[op.wall];
       if (wall) parts.push(opening(op, wall.start, wall.end, theme, wallW, thin));
+    }
+    if (showFixtures && fp.fixtures.length) {
+      for (const f of fp.fixtures) parts.push(fixtureMark(f, theme, { font, thin, wallW }));
     }
     if (showDims) {
       for (const wall of fp.walls) {
@@ -425,6 +576,9 @@ var MozuScan = (() => {
     const p0 = add(wallStart, scale(dir, o));
     const p1 = add(wallStart, scale(dir, o + op.width));
     const cut = `<line x1="${fmt(p0.x)}" y1="${fmt(p0.z)}" x2="${fmt(p1.x)}" y2="${fmt(p1.z)}" stroke="${theme.floor}" stroke-width="${fmt(wallW * 1.25)}"/>`;
+    if (op.glass) {
+      return cut + `<line x1="${fmt(p0.x)}" y1="${fmt(p0.z)}" x2="${fmt(p1.x)}" y2="${fmt(p1.z)}" stroke="${theme.accent}" stroke-width="${fmt(thin * 2)}" stroke-dasharray="${fmt(thin * 4)} ${fmt(thin * 2.5)}"/>`;
+    }
     if (op.type === "window") {
       return cut + `<line x1="${fmt(p0.x)}" y1="${fmt(p0.z)}" x2="${fmt(p1.x)}" y2="${fmt(p1.z)}" stroke="${theme.wall}" stroke-width="${fmt(thin * 1.4)}"/>`;
     }
@@ -434,6 +588,17 @@ var MozuScan = (() => {
     const arc = `<path d="M ${fmt(p1.x)} ${fmt(p1.z)} A ${fmt(op.width)} ${fmt(op.width)} 0 0 1 ${fmt(leafEnd.x)} ${fmt(leafEnd.z)}" fill="none" stroke="${theme.dimension}" stroke-width="${fmt(thin)}" stroke-dasharray="${fmt(thin * 3)} ${fmt(thin * 2)}"/>`;
     const leaf = `<line x1="${fmt(hinge.x)}" y1="${fmt(hinge.z)}" x2="${fmt(leafEnd.x)}" y2="${fmt(leafEnd.z)}" stroke="${theme.wall}" stroke-width="${fmt(thin * 1.4)}"/>`;
     return cut + arc + leaf;
+  }
+  function fixtureMark(f, theme, s) {
+    const ink = theme.fixture ?? theme.label;
+    const n = normalize(f.inward);
+    const r = Math.max(s.wallW * 0.62, s.font * 0.34);
+    const c = add(f.point, scale(n, r * 1.15));
+    const detected = f.source === "detected";
+    const labelPos = add(c, scale(n, r * 1.5));
+    const anchor = Math.abs(n.x) > Math.abs(n.z) ? n.x > 0 ? "start" : "end" : "middle";
+    const dy = Math.abs(n.x) > Math.abs(n.z) ? 0 : n.z > 0 ? s.font * 0.5 : -s.font * 0.5;
+    return `<g><line x1="${fmt(f.point.x)}" y1="${fmt(f.point.z)}" x2="${fmt(c.x)}" y2="${fmt(c.z)}" stroke="${ink}" stroke-width="${fmt(s.thin)}"/><circle cx="${fmt(c.x)}" cy="${fmt(c.z)}" r="${fmt(r)}" fill="${detected ? ink : theme.paper}" stroke="${ink}" stroke-width="${fmt(s.thin * 1.2)}"/><text x="${fmt(c.x)}" y="${fmt(c.z)}" font-size="${fmt(r * 1.15)}" font-weight="700" fill="${detected ? theme.paper : ink}" text-anchor="middle" dominant-baseline="central">${esc(FIXTURE_GLYPH[f.type] ?? "?")}</text><text x="${fmt(labelPos.x)}" y="${fmt(labelPos.z + dy)}" font-size="${fmt(s.font * 0.52)}" fill="${ink}" text-anchor="${anchor}" dominant-baseline="central">${esc(f.text)}</text></g>`;
   }
   function resolveTheme(t) {
     if (!t) return LIGHT;
@@ -469,6 +634,7 @@ var MozuScan = (() => {
         height: Number(data.height) || 2700,
         openings: Array.isArray(data.openings) ? data.openings : [],
         objects: Array.isArray(data.objects) ? data.objects : [],
+        fixtures: Array.isArray(data.fixtures) ? data.fixtures : [],
         source: data.source ?? "manual",
         unitSystem: data.unitSystem ?? "metric",
         confidence: typeof data.confidence === "number" ? data.confidence : 0.8,
@@ -485,7 +651,7 @@ var MozuScan = (() => {
     params.set("poly", polyParam(scan.polygon));
     params.set("h", String(Math.round(scan.height)));
     params.set("src", scan.source);
-    if (scan.openings.length || scan.objects.length) {
+    if (scan.openings.length || scan.objects.length || scan.fixtures?.length) {
       params.set("scan", toBase64Url(serializeScan(scan)));
     }
     return `${base}/scan?${params.toString()}`;

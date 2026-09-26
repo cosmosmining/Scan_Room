@@ -46,6 +46,27 @@ export interface PlacedFurniture {
   label?: string;
   /** True when this came from a scan. Drawn as a measurement, not a product. */
   scanned?: boolean;
+  /**
+   * Set for a scanned COLUMN: structure, not furniture. Drawn solid in the wall
+   * finish, kept by "Clear all", and round when the scan says it is round.
+   */
+  column?: 'round' | 'box';
+}
+
+/**
+ * A local footprint offset turned by a yaw about +Y, into room (x, z) — the
+ * SAME turn three.js applies for `rotation.y` (local +X → (cos, −sin)).
+ *
+ * The plan used to turn furniture the ordinary 2D way, (cos, +sin): the
+ * opposite sense. At 90° steps a box looks identical either way, which is how
+ * it survived, but every front tick pointed backwards — a sofa set against the
+ * left wall faced INTO the wall — and any other angle was mirrored between the
+ * plan and the 3D view. Every view of a placed piece goes through this.
+ */
+export function yawOffset(local: { x: number; z: number }, rotationY: number): { x: number; z: number } {
+  const c = Math.cos(rotationY);
+  const s = Math.sin(rotationY);
+  return { x: local.x * c + local.z * s, z: -local.x * s + local.z * c };
 }
 
 /** The catalogue item behind a placed piece — absent for a scanned one. */

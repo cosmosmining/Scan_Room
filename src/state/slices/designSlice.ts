@@ -125,7 +125,9 @@ export const createDesignSlice: StateCreator<
     }));
   },
 
-  clearFurniture: () => set({ designItems: [], designSelection: null }),
+  // Furniture only: a scanned column is structure and is not going anywhere.
+  clearFurniture: () =>
+    set((s) => ({ designItems: s.designItems.filter((i) => i.column), designSelection: null })),
 
   removeFurniture: (id) =>
     set((s) => ({

@@ -22,15 +22,30 @@ enum FloorplanBuilder {
     static func roomScan(
         from room: CapturedRoom,
         tracks: [SocketTrack] = [],
-        sightings: [FixtureSighting] = []
+        sightings: [FixtureSighting] = [],
+        rays: [(eye: SIMD3<Float>, hit: SIMD3<Float>)] = []
     ) -> RoomScan {
-        let polygon = orderedFloorPolygon(room.walls)
-        let cleaned = Geo.ensureCCW(Geo.simplify(polygon))
         let height = ceilingHeightMm(room.walls)
         let floorY = floorYMm(room.walls)
-        let openings = mapOpenings(room, to: cleaned)
-        let objects = room.objects.map(scanObject(from:))
+        // Clutter out by height, pillars out as structure, the outline from the
+        // rest — see `WallLoop.analyse`.
+        let analysis = WallLoop.analyse(wallSegments(room.walls, floorYMm: floorY))
+        let cleaned = Geo.ensureCCW(Geo.simplify(analysis.outline))
         let finalPolygon = cleaned.isEmpty ? boundingBox(room.walls) : cleaned
+        let recognised = mapOpenings(room, to: finalPolygon, floorYMm: floorY)
+        // Glass RoomPlan did not recognise, from readings that went through the
+        // finished walls. Suggestions: see `GlassFinder` on mirrors.
+        let glass = GlassFinder.openings(
+            rays: rays.map { ray in
+                GlassFinder.Ray(eye: point(ray.eye, floorYMm: floorY), hit: point(ray.hit, floorYMm: floorY))
+            },
+            polygon: finalPolygon,
+            ceilingMm: height,
+            existing: recognised.map { GlassFinder.Known(wall: $0.wall, offset: $0.offset, width: $0.width) }
+        )
+        let openings = recognised + glass
+        let objects = room.objects.map(scanObject(from:))
+            + analysis.pillars.map { column($0, heightMm: height) }
         // Measured tracks when there were any; the ray-cast fallback only for a
         // session that never gave us depth.
         let fixtures: [ScanFixture]
@@ -72,21 +87,49 @@ enum FloorplanBuilder {
         return (mm(p0), mm(p1))
     }
 
-    /// Wall surfaces → an ordered closed loop, with the fragments of one wall
-    /// merged and the corners snapped to where the wall LINES meet.
+    /// Wall surfaces → the segments `WallLoop` builds the outline from, each
+    /// carrying its height so clutter can be told from wall.
     ///
-    /// This used to be unbounded greedy nearest-endpoint chaining that appended
-    /// only the FAR endpoint of each segment. Discarding the near endpoint made
-    /// every edge a chord fusing the gap between two walls with the wall itself
-    /// — which is how shoes occupying 500mm of one wall tilted that wall along
-    /// its entire length and put the far corner 150mm out. See `WallLoop.swift`
-    /// for the measurement and the reasoning; the geometry lives there because
-    /// it is pure, and its TypeScript mirror carries the tests.
-    private static func orderedFloorPolygon(_ walls: [CapturedRoom.Surface]) -> [Vec2] {
-        WallLoop.outline(walls.map {
-            let s = segment($0)
-            return WallLoop.Segment(a: s.a, b: s.b)
-        })
+    /// Outline assembly used to be unbounded greedy nearest-endpoint chaining
+    /// that appended only the FAR endpoint of each segment. Discarding the near
+    /// endpoint made every edge a chord fusing the gap between two walls with the
+    /// wall itself — which is how shoes occupying 500mm of one wall tilted that
+    /// wall along its entire length. See `WallLoop.swift` for the measurement and
+    /// the reasoning; the geometry lives there because it is pure, and its
+    /// TypeScript mirror carries the tests.
+    private static func wallSegments(_ walls: [CapturedRoom.Surface], floorYMm: Double) -> [WallLoop.Segment] {
+        walls.flatMap { wall -> [WallLoop.Segment] in
+            let heightMm = Double(wall.dimensions.y) * 1000
+            let topMm = Double(wall.transform.columns.3.y) * 1000 + heightMm / 2 - floorYMm
+            return facets(wall).map {
+                WallLoop.Segment(a: $0.a, b: $0.b, heightMm: heightMm, topMm: topMm)
+            }
+        }
+    }
+
+    /// A flat wall is one segment. A CURVED one (iOS 17 reports round columns
+    /// and curved walls this way) is not: treating it as a flat surface drew a
+    /// straight line through the middle of a round pillar. Its arc is sampled
+    /// instead — about the surface's own origin, in its horizontal (local XZ)
+    /// plane — so a column arrives as the ring of short facets `WallLoop`
+    /// recognises as a pillar, and a curved wall as a polyline that follows it.
+    /// Steps are 15° apart so neighbouring facets never read as one straight
+    /// wall (WallLoop merges anything within 8°).
+    private static func facets(_ wall: CapturedRoom.Surface) -> [(a: Vec2, b: Vec2)] {
+        guard let curve = wall.curve, curve.radius > 0 else { return [segment(wall)] }
+        let start = curve.startAngle.converted(to: .radians).value
+        let end = curve.endAngle.converted(to: .radians).value
+        let sweep = end - start
+        guard abs(sweep) > 0.01 else { return [segment(wall)] }
+        let steps = max(2, Int((abs(sweep) / (15 * .pi / 180)).rounded(.up)))
+        let r = curve.radius
+        let points = (0...steps).map { i -> Vec2 in
+            let theta = start + sweep * Double(i) / Double(steps)
+            let local = SIMD4<Float>(r * Float(cos(theta)), 0, r * Float(sin(theta)), 1)
+            let world = wall.transform * local
+            return mm(SIMD3<Float>(world.x, world.y, world.z))
+        }
+        return (0..<steps).map { (a: points[$0], b: points[$0 + 1]) }
     }
 
     private static func boundingBox(_ walls: [CapturedRoom.Surface]) -> [Vec2] {
@@ -121,7 +164,7 @@ enum FloorplanBuilder {
 
     // MARK: Openings → nearest edge of the ordered polygon
 
-    private static func mapOpenings(_ room: CapturedRoom, to polygon: [Vec2]) -> [ScanOpening] {
+    private static func mapOpenings(_ room: CapturedRoom, to polygon: [Vec2], floorYMm: Double) -> [ScanOpening] {
         guard polygon.count >= 3 else { return [] }
         var result: [ScanOpening] = []
         let tagged: [(ScanOpening.Kind, [CapturedRoom.Surface])] = [
@@ -143,8 +186,12 @@ enum FloorplanBuilder {
                 // by half its width once the scan reached the web floorplan.
                 let offset = max(0, dot(Geo.sub(center, start), dir) - width / 2)
                 let height = Double(s.dimensions.y) * 1000
+                // World Y is measured from wherever the session started (about
+                // chest height), not from the floor, so the floor comes off
+                // first. Without it every window's sill was ~1.3m too low —
+                // usually clamped to 0, i.e. windows drawn down to the floor.
                 let sill = kind == .window
-                    ? max(0, Double(t.columns.3.y) * 1000 - height / 2)
+                    ? max(0, Double(t.columns.3.y) * 1000 - height / 2 - floorYMm)
                     : 0
                 result.append(ScanOpening(
                     type: kind, wall: edge,
@@ -189,8 +236,27 @@ enum FloorplanBuilder {
         )
     }
 
+    /// A pillar the wall analysis found, as a scanned object. Floor to ceiling:
+    /// it is structure, and the one thing about it that is certain is that it
+    /// reaches the ceiling.
+    private static func column(_ pillar: WallLoop.Pillar, heightMm: Double) -> ScanObject {
+        ScanObject(
+            category: ScanObject.column,
+            center: pillar.center,
+            width: pillar.width,
+            depth: pillar.depth,
+            rotation: pillar.rotation,
+            height: heightMm,
+            shape: pillar.shape.rawValue
+        )
+    }
+
     // MARK: Helpers
 
+    /// World metres → plan millimetres with y as height above the floor.
+    private static func point(_ v: SIMD3<Float>, floorYMm: Double) -> GlassFinder.Point3 {
+        GlassFinder.Point3(x: Double(v.x) * 1000, y: Double(v.y) * 1000 - floorYMm, z: Double(v.z) * 1000)
+    }
     private static func mm(_ v: SIMD3<Float>) -> Vec2 { Vec2(x: Double(v.x) * 1000, z: Double(v.z) * 1000) }
     private static func dot(_ a: Vec2, _ b: Vec2) -> Double { a.x * b.x + a.z * b.z }
 }

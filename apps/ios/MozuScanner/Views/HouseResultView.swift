@@ -141,7 +141,9 @@ private struct HousePlanCanvas: View {
                 let wall = fp.walls[op.wall]
                 let dir = Geo.normalize(Geo.sub(wall.end, wall.start))
                 let total = Geo.distance(wall.start, wall.end)
-                let o = min(max(op.offset - op.width / 2, 0), max(0, total - op.width))
+                // `offset` is the LEADING edge (the RoomScan contract), not the
+                // centre; subtracting half a width drew every cut half a door early.
+                let o = min(max(op.offset, 0), max(0, total - op.width))
                 let a = Vec2(x: wall.start.x + dir.x * o, z: wall.start.z + dir.z * o)
                 let b = Vec2(x: wall.start.x + dir.x * (o + op.width),
                              z: wall.start.z + dir.z * (o + op.width))

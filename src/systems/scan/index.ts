@@ -72,3 +72,18 @@ export {
   type ScanPhase,
   type PlaneObservation,
 } from './lidarSession';
+export {
+  analyseWalls,
+  wallLoop,
+  WALL_LOOP_DEFAULTS,
+  type LoopSegment,
+  type Pillar,
+  type WallAnalysis,
+} from './wallLoop';
+export {
+  findGlass,
+  GLASS_DEFAULTS,
+  type DepthRay,
+  type GlassOpening,
+  type GlassOptions,
+} from './glassFinder';

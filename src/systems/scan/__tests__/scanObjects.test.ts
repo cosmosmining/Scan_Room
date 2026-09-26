@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 import { scanToGeometry } from '@/systems/scan/scanToGeometry';
 import { placedName, placedSize, SCANNED_ITEM_ID, type PlacedFurniture } from '@/systems/furniture/catalog';
 import type { RoomScan } from '@mozu/scan-sdk';
@@ -95,5 +96,50 @@ describe('re-applying geometry does not eat hand-placed furniture', () => {
     items = useConfiguratorStore.getState().designItems;
     expect(items.filter((i) => !i.scanned), 'the hand-placed sofa survives').toHaveLength(1);
     expect(items.filter((i) => i.scanned), 'the old scanned pieces are gone').toHaveLength(0);
+  });
+});
+
+describe('a scanned object faces the same way in the plan and in 3D', () => {
+  it('turns the scan’s plan-sense yaw into a 3D yaw', async () => {
+    // RoomPlan's width axis for this cabinet points along +Z: (cos, sin) of 90°.
+    const { useConfiguratorStore } = await import('@/state/useConfiguratorStore');
+    useConfiguratorStore.getState().applyRoomGeometry(scanToGeometry({
+      ...scan,
+      objects: [{ category: 'storage', center: { x: 2000, z: 1500 }, width: 800, depth: 400, rotation: Math.PI / 2 }],
+    }));
+    const placed = useConfiguratorStore.getState().designItems.find((i) => i.scanned)!;
+    // three.js must therefore turn local +X onto +Z too.
+    const object = new THREE.Object3D();
+    object.rotation.y = placed.rotationY;
+    const widthAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(object.quaternion);
+    expect(widthAxis.x).toBeCloseTo(0, 6);
+    expect(widthAxis.z).toBeCloseTo(1, 6);
+  });
+});
+
+describe('a scanned column is structure', () => {
+  const withColumn: RoomScan = {
+    ...scan,
+    objects: [
+      ...scan.objects,
+      { category: 'column', center: { x: 2000, z: 1500 }, width: 400, depth: 400, rotation: 0, height: 2500, shape: 'round' },
+    ],
+  };
+
+  it('arrives round, and floor to ceiling', async () => {
+    const { useConfiguratorStore } = await import('@/state/useConfiguratorStore');
+    useConfiguratorStore.getState().applyRoomGeometry(scanToGeometry(withColumn));
+    const column = useConfiguratorStore.getState().designItems.find((i) => i.column);
+    expect(column?.column).toBe('round');
+    expect(column && placedSize(column).height).toBe(2500);
+  });
+
+  it('survives "Clear all", which is for the furniture', async () => {
+    const { useConfiguratorStore } = await import('@/state/useConfiguratorStore');
+    useConfiguratorStore.getState().applyRoomGeometry(scanToGeometry(withColumn));
+    useConfiguratorStore.getState().clearFurniture();
+    const items = useConfiguratorStore.getState().designItems;
+    expect(items).toHaveLength(1);
+    expect(items[0].column).toBe('round');
   });
 });

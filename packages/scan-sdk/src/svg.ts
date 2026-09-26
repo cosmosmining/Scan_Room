@@ -121,6 +121,18 @@ export function floorplanToSvg(fp: Floorplan, opts: FloorplanSvgOptions = {}): s
   if (showObjects) {
     for (const o of fp.objects) {
       const deg = (o.rotation * 180) / Math.PI;
+      if (o.category === 'column') {
+        // A column is structure: drawn solid like the walls it is part of, and
+        // round when it is round. No label — the plan does not label walls.
+        parts.push(
+          o.shape === 'round'
+            ? `<circle cx="${fmt(o.center.x)}" cy="${fmt(o.center.z)}" r="${fmt(o.width / 2)}" fill="${theme.wall}"/>`
+            : `<g transform="translate(${fmt(o.center.x)} ${fmt(o.center.z)}) rotate(${fmt(deg)})">` +
+                `<rect x="${fmt(-o.width / 2)}" y="${fmt(-o.depth / 2)}" width="${fmt(o.width)}" height="${fmt(o.depth)}" fill="${theme.wall}"/>` +
+                `</g>`,
+        );
+        continue;
+      }
       parts.push(
         `<g transform="translate(${fmt(o.center.x)} ${fmt(o.center.z)}) rotate(${fmt(deg)})">` +
           `<rect x="${fmt(-o.width / 2)}" y="${fmt(-o.depth / 2)}" width="${fmt(o.width)}" height="${fmt(o.depth)}" ` +
@@ -225,6 +237,15 @@ function opening(
   const cut =
     `<line x1="${fmt(p0.x)}" y1="${fmt(p0.z)}" x2="${fmt(p1.x)}" y2="${fmt(p1.z)}" ` +
     `stroke="${theme.floor}" stroke-width="${fmt(wallW * 1.25)}"/>`;
+  // Glass found by seeing THROUGH the wall is a suggestion — dashed, in the
+  // accent colour, because a mirror would have produced exactly the same.
+  if (op.glass) {
+    return (
+      cut +
+      `<line x1="${fmt(p0.x)}" y1="${fmt(p0.z)}" x2="${fmt(p1.x)}" y2="${fmt(p1.z)}" ` +
+      `stroke="${theme.accent}" stroke-width="${fmt(thin * 2)}" stroke-dasharray="${fmt(thin * 4)} ${fmt(thin * 2.5)}"/>`
+    );
+  }
   if (op.type === 'window') {
     return (
       cut +

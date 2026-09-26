@@ -43,6 +43,9 @@ struct FloorplanCanvas: View {
     /// when the kitchen is fitted, so the plan has to let you say so.
     var selectedObject: Int? = nil
 
+    /// Index into `floorplan.openings` of the door/window drawn as selected.
+    var selectedOpening: Int? = nil
+
     /// Editing callback: phase, where the finger went down, where it is now —
     /// both in millimetres. Nil disables editing entirely.
     var onEdit: ((EditPhase, Vec2, Vec2) -> Void)? = nil
@@ -88,27 +91,35 @@ struct FloorplanCanvas: View {
         context.fill(poly, with: .color(theme.floor))
         context.stroke(poly, with: .color(theme.wall), style: StrokeStyle(lineWidth: wallPx, lineJoin: .miter))
 
-        // Objects (furniture).
+        // Objects (furniture), and columns — solid, in the wall colour, because
+        // they are structure rather than something that will be moved.
         for (i, o) in fp.objects.enumerated() {
             let path = objectPath(o, transform: p)
             let chosen = i == selectedObject
-            context.fill(path, with: .color(chosen ? theme.selection.opacity(0.28) : theme.object))
+            let fill = o.isColumn ? theme.wall : theme.object
+            context.fill(path, with: .color(chosen ? theme.selection.opacity(0.28) : fill))
             context.stroke(
                 path,
                 with: .color(chosen ? theme.selection : theme.dimension),
                 lineWidth: chosen ? thin * 2.5 : thin
             )
-            context.draw(
-                Text(o.category)
-                    .font(.system(size: fontPx * 0.5))
-                    .foregroundColor(chosen ? theme.selection : theme.dimension),
-                at: p(o.center)
-            )
+            // A column needs no label on a plan — it is drawn like the walls.
+            if !o.isColumn || chosen {
+                context.draw(
+                    Text(o.category)
+                        .font(.system(size: fontPx * 0.5))
+                        .foregroundColor(chosen ? theme.selection : theme.dimension),
+                    at: p(o.center)
+                )
+            }
         }
 
         // Openings (door swing / window bar).
-        for op in fp.openings where op.wall < fp.walls.count {
-            drawOpening(op, wall: fp.walls[op.wall], in: &context, transform: p, wallPx: wallPx, thin: thin)
+        for (i, op) in fp.openings.enumerated() where op.wall < fp.walls.count {
+            drawOpening(
+                op, wall: fp.walls[op.wall], selected: i == selectedOpening,
+                in: &context, transform: p, wallPx: wallPx, thin: thin
+            )
         }
 
         // Sockets — a marker just inside the wall with its label beside it. A
@@ -189,6 +200,14 @@ struct FloorplanCanvas: View {
     }
 
     private func objectPath(_ o: ScanObject, transform p: (Vec2) -> CGPoint) -> Path {
+        // A round column is a circle. Drawn as its bounding square it read as a
+        // box the scan had got wrong.
+        if o.isRound {
+            let c = p(o.center)
+            let edge = p(Vec2(x: o.center.x + o.width / 2, z: o.center.z))
+            let r = hypot(edge.x - c.x, edge.y - c.y)
+            return Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+        }
         let hw = o.width / 2, hd = o.depth / 2
         let cosr = cos(o.rotation), sinr = sin(o.rotation)
         let locals = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)]
@@ -202,7 +221,7 @@ struct FloorplanCanvas: View {
     }
 
     private func drawOpening(
-        _ op: ScanOpening, wall: FloorplanWall,
+        _ op: ScanOpening, wall: FloorplanWall, selected: Bool = false,
         in context: inout GraphicsContext, transform p: (Vec2) -> CGPoint,
         wallPx: CGFloat, thin: CGFloat
     ) {
@@ -218,7 +237,21 @@ struct FloorplanCanvas: View {
         var cut = Path()
         cut.move(to: p(a))
         cut.addLine(to: p(b))
+        if selected {
+            context.stroke(cut, with: .color(theme.selection.opacity(0.35)), lineWidth: wallPx * 2.4)
+        }
         context.stroke(cut, with: .color(theme.floor), lineWidth: wallPx * 1.25)
+
+        // Glass found by seeing THROUGH the wall is a suggestion, not a
+        // measurement — a mirror looks the same to LiDAR — so it is drawn dashed
+        // in the selection colour until someone keeps it.
+        if op.glass == true {
+            context.stroke(
+                cut, with: .color(theme.selection),
+                style: StrokeStyle(lineWidth: thin * 2, dash: [thin * 4, thin * 2.5])
+            )
+            return
+        }
 
         if op.type == .window {
             var bar = Path()

@@ -13,7 +13,7 @@ import {
 import { furnitureParts } from '@/systems/furniture/parts';
 import { swatchById, type SurfaceFinish } from '@/systems/aesthetic/finishes';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
-import { useFinishTexture } from './finishMaterial';
+import { useFinishMaterial, useFinishTexture } from './finishMaterial';
 import { materialKind } from '@/systems/aesthetic/finishes';
 
 /**
@@ -43,18 +43,74 @@ export function DesignItems() {
 
   return (
     <group>
-      {items.map((placed) => (
-        <FurnitureMesh
-          key={placed.id}
-          placed={placed}
-          selected={placed.id === selection}
-          dragging={placed.id === drag}
-          onGrab={() => {
-            select(placed.id);
-            begin(placed.id);
-          }}
-        />
-      ))}
+      {items.map((placed) => {
+        const onGrab = () => {
+          select(placed.id);
+          begin(placed.id);
+        };
+        return placed.column ? (
+          <ColumnMesh key={placed.id} placed={placed} selected={placed.id === selection} onGrab={onGrab} />
+        ) : (
+          <FurnitureMesh
+            key={placed.id}
+            placed={placed}
+            selected={placed.id === selection}
+            dragging={placed.id === drag}
+            onGrab={onGrab}
+          />
+        );
+      })}
+    </group>
+  );
+}
+
+/**
+ * A scanned column: structure, floor to ceiling, in the same finish as the
+ * walls — which is what it is in every room that has one. Round when the scan
+ * says round; a translucent measurement box was the wrong thing to draw for
+ * something nobody is going to carry out.
+ */
+function ColumnMesh({
+  placed,
+  selected,
+  onGrab,
+}: {
+  placed: PlacedFurniture;
+  selected: boolean;
+  onGrab: () => void;
+}) {
+  const wallFinish = useConfiguratorStore((s) => s.wallFinish);
+  const size = placedSize(placed);
+  // Cylinder and box UVs run 0…1 up the side, so one UV unit is the height.
+  const material = useFinishMaterial(wallFinish, { uvUnitMm: size.height });
+  const round = placed.column === 'round';
+
+  return (
+    <group
+      position={[placed.position.x, 0, placed.position.z]}
+      rotation={[0, placed.rotationY, 0]}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onGrab();
+      }}
+    >
+      <mesh castShadow receiveShadow position={[0, size.height / 2, 0]} material={material}>
+        {round ? (
+          <cylinderGeometry args={[size.width / 2, size.width / 2, size.height, 48]} />
+        ) : (
+          <boxGeometry args={[size.width, size.height, size.depth]} />
+        )}
+      </mesh>
+      {selected && (
+        <mesh position={[0, size.height / 2, 0]}>
+          {round ? (
+            <cylinderGeometry args={[size.width / 2 + 30, size.width / 2 + 30, size.height + 20, 48]} />
+          ) : (
+            <boxGeometry args={[size.width + 60, size.height + 20, size.depth + 60]} />
+          )}
+          <meshBasicMaterial color="#38bdf8" transparent opacity={0.16} depthWrite={false} />
+        </mesh>
+      )}
     </group>
   );
 }

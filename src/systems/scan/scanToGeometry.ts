@@ -42,6 +42,7 @@ export function scanToGeometry(scan: RoomScan): RoomGeometry {
           width: o.width,
           height: o.height,
           sillHeight: o.sill ?? 0,
+          ...(o.glass ? { glass: true } : {}),
         })),
     }));
   }

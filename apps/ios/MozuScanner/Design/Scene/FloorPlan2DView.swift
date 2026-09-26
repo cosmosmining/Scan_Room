@@ -212,6 +212,11 @@ struct FloorPlan2DView: View {
                 drawFurniture(placed, ctx: &ctx, transform: t)
             }
 
+            // --- Columns: structure, so drawn solid in the wall colour ---
+            for column in room.columns {
+                ctx.fill(columnPath(column, transform: t), with: .color(Color(white: 0.15)))
+            }
+
             // --- Thick dark wall stroke along the footprint ---
             ctx.stroke(floorPath, with: .color(Color(white: 0.15)),
                        style: StrokeStyle(lineWidth: 6, lineJoin: .round))
@@ -341,6 +346,21 @@ struct FloorPlan2DView: View {
         return SurfaceFinish(swatchID: SwatchCatalog.defaultSwatchID)
     }
 
+    private func columnPath(_ column: DesignColumn, transform t: PlanTransform) -> Path {
+        let centre = t.point(column.center)
+        if column.round {
+            let r = CGFloat(column.width / 2) * t.scale
+            return Path(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r))
+        }
+        let hw = column.width / 2, hd = column.depth / 2
+        let corners = [SIMD2<Float>(-hw, -hd), SIMD2<Float>(hw, -hd), SIMD2<Float>(hw, hd), SIMD2<Float>(-hw, hd)]
+            .map { t.point(rotate($0, by: column.rotationY) + column.center) }
+        var path = Path()
+        path.addLines(corners)
+        path.closeSubpath()
+        return path
+    }
+
     // MARK: Rotate handle geometry
 
     /// The rotate handle sits just beyond the item's front-right corner, offset
@@ -426,8 +446,9 @@ struct FloorPlan2DView: View {
             let dx = value.location.x - centrePt.x
             let dy = value.location.y - centrePt.y
             // Screen +Y is world +Z; atan2(dy, dx) is the angle in the (X, Z) plane.
+            // The handle sits at local +45°, and `rotate` turns it to 45° − yaw.
             let angle = Float(atan2(Double(dy), Double(dx)))
-            let yaw = angle - (.pi / 4)   // remove the diagonal handle offset
+            let yaw = (.pi / 4) - angle
             state.rotate(id, to: yaw)
         } else if let id = dragItemID, let start = dragItemStart {
             let dM = t.metresDelta(value.translation)   // (dX, dZ) in metres
@@ -468,7 +489,7 @@ struct FloorPlan2DView: View {
             // Map the point into the item's local (un-rotated, centred) frame, in metres.
             let worldM = t.metres(point)
             let rel = worldM - SIMD2<Float>(placed.position.x, placed.position.z)
-            let local = rotate(rel, by: -placed.rotationY)
+            let local = unrotate(rel, by: placed.rotationY)
             let halfW = item.size.x / 2
             let halfD = item.size.z / 2
             // Small slop so thin items (e.g. the rug edge) stay tappable.
@@ -483,12 +504,21 @@ struct FloorPlan2DView: View {
 
     // MARK: Math utilities
 
-    /// Rotate a 2D vector by `angle` radians in the floor plane. Screen +Y maps to
-    /// world +Z, so a positive `rotationY` (yaw about +Y) reads as a clockwise turn
-    /// on screen, which matches the 3D scene's apparent rotation from above.
+    /// Turn a local (x, z) offset by a yaw of `angle` about +Y — EXACTLY as the
+    /// 3D scene does (`simd_quatf(angle:axis: +Y)`), which takes local +X to
+    /// (cos, −sin). This used to be the ordinary 2D rotation, (cos, +sin): the
+    /// opposite sense. At 90° steps a box looks the same either way, which is how
+    /// it went unnoticed, but every piece's front faced the wrong way on the plan
+    /// — a sofa the recommender set against the left wall faced INTO that wall —
+    /// and any other angle was mirrored between 2D and 3D.
     private func rotate(_ v: SIMD2<Float>, by angle: Float) -> SIMD2<Float> {
         let c = cos(angle), s = sin(angle)
-        return SIMD2<Float>(v.x * c - v.y * s, v.x * s + v.y * c)
+        return SIMD2<Float>(v.x * c + v.y * s, -v.x * s + v.y * c)
+    }
+
+    /// The inverse of `rotate`: world offset → the item's local frame.
+    private func unrotate(_ v: SIMD2<Float>, by angle: Float) -> SIMD2<Float> {
+        rotate(v, by: -angle)
     }
 
     private func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat {

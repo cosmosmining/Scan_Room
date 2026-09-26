@@ -336,7 +336,8 @@ final class RoomCaptureController: ObservableObject {
                 let scan = FloorplanBuilder.roomScan(
                     from: room,
                     tracks: fixtureCapture.confirmed,
-                    sightings: fixtureCapture.sightings
+                    sightings: fixtureCapture.sightings,
+                    rays: fixtureCapture.rays
                 )
                 savedScans.append(scan)
                 phase = .roomSaved(count: savedScans.count)
