@@ -65,8 +65,19 @@ struct SocketTrack: Identifiable, Equatable {
     var bestFeatures: Int
     var bestPlatePx: Double
     /// Placed by the user pointing at it. A person who taps a socket has
-    /// settled the question; nothing downstream gets to second-guess it.
+    /// settled the question; nothing downstream gets to second-guess it — and
+    /// no later detection gets to move it.
     var manual: Bool = false
+    /// Total weight of the looks averaged into `world`. Each look counts
+    /// 1/range²: a reading's error grows with distance, so a close look settles
+    /// the position and a distant one only nudges it. With a plain mean, one
+    /// far-off sighting could drag a confirmed marker off its socket.
+    var weight: Double = 0
+    /// The number shown beside the marker, fixed the moment the track first
+    /// confirms (0 until then). Numbering by list position renumbered every
+    /// later socket whenever an earlier-created one confirmed late — labels
+    /// hopping from socket to socket mid-scan.
+    var number: Int = 0
 
     /// Power outlet, data/switch plate, blank cover — or unknown when it was
     /// never seen close enough for the slots to resolve.
@@ -201,7 +212,9 @@ final class FixtureCapture {
     private(set) var depthAvailable = true
 
     /// Only the tracks worth showing or placing.
-    var confirmed: [SocketTrack] { tracks.filter(\.confirmed) }
+    /// Confirmed tracks in the order their numbers were given, so the list —
+    /// and every label drawn from it — is stable as more sockets confirm.
+    var confirmed: [SocketTrack] { tracks.filter(\.confirmed).sorted { $0.number < $1.number } }
 
     func reset() {
         tracks.removeAll()
@@ -284,6 +297,9 @@ final class FixtureCapture {
                 }
             }
 
+            // Frozen before the hop to the main queue, so the closure below
+            // captures values rather than this pass's mutable working state.
+            let seen = found, placed = measured
             let hasDepth = depth != nil
             let candidates = found.count
             let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
@@ -307,19 +323,19 @@ final class FixtureCapture {
                     self.rays = stride(from: 0, to: self.rays.count, by: 2).map { self.rays[$0] }
                 }
                 if hasDepth {
-                    self.rejectedByGeometry += candidates - measured.count
+                    self.rejectedByGeometry += candidates - placed.count
                     let eye = SIMD3<Double>(
                         Double(transform.columns.3.x),
                         Double(transform.columns.3.y),
                         Double(transform.columns.3.z)
                     )
-                    for (detection, geometry) in measured {
+                    for (detection, geometry) in placed {
                         self.integrate(detection, geometry, eye: eye)
                     }
                 } else {
                     // No depth: nothing can be measured, so bank the image point
                     // and ray-cast it against the polygon at the end.
-                    for d in found {
+                    for d in seen {
                         self.sightings.append(FixtureSighting(
                             cx: d.cx, cy: d.cy, score: d.score,
                             cameraTransform: transform, intrinsics: intrinsics,
@@ -376,17 +392,23 @@ final class FixtureCapture {
         if rejected.contains(where: { simd_distance($0, geometry.world) < FixtureCapture.mergeM * 2 }) {
             return
         }
-        if let index = tracks.firstIndex(where: {
-            simd_distance($0.world, geometry.world) < FixtureCapture.mergeM
-                && simd_dot($0.normal, geometry.normal) > FixtureCapture.mergeNormalDot
-        }) {
+        let w = FixtureCapture.lookWeight(geometry.rangeM)
+        // Nearest, so a sighting between two sockets side by side joins the one
+        // it is actually on rather than whichever was created first.
+        if let index = nearestTrack(to: geometry.world, normal: geometry.normal) {
             var track = tracks[index]
-            let n = Double(track.hits)
-            // Running mean: every frame nudges the estimate, none dominates it.
-            track.world = (track.world * n + geometry.world) / (n + 1)
-            track.normal = simd_normalize(track.normal * n + geometry.normal)
-            track.widthMm = (track.widthMm * n + geometry.widthMm) / (n + 1)
-            track.heightMm = (track.heightMm * n + geometry.heightMm) / (n + 1)
+            // Weighted running mean (see `SocketTrack.weight`). A hand-placed
+            // pin is where the person said it is; a detection only
+            // corroborates it.
+            if !track.manual {
+                let total = track.weight
+                let k = 1 / (total + w)
+                track.world = (track.world * total + geometry.world * w) * k
+                track.normal = simd_normalize(track.normal * total + geometry.normal * w)
+                track.widthMm = (track.widthMm * total + geometry.widthMm * w) * k
+                track.heightMm = (track.heightMm * total + geometry.heightMm * w) * k
+                track.weight = total + w
+            }
             track.score = max(track.score, detection.score)
             // Classification comes from the closest look, not the average.
             if detection.platePx > track.bestPlatePx {
@@ -397,6 +419,7 @@ final class FixtureCapture {
             if track.viewpoints.count < 12 { track.viewpoints.append(eye) }
             track.baselineM = FixtureCapture.spread(track.viewpoints)
             tracks[index] = track
+            numberIfConfirmed(index)
             return
         }
 
@@ -411,9 +434,36 @@ final class FixtureCapture {
             baselineM: 0,
             viewpoints: [eye],
             bestFeatures: detection.holes,
-            bestPlatePx: detection.platePx
+            bestPlatePx: detection.platePx,
+            weight: w
         ))
         nextTrackID += 1
+    }
+
+    /// Looks closer than this are weighted as if taken from here.
+    private static let minWeightRangeM = 0.3
+
+    /// Inverse-variance weight of one look: its error grows with range.
+    static func lookWeight(_ rangeM: Double) -> Double {
+        let r = max(rangeM, minWeightRangeM)
+        return 1 / (r * r)
+    }
+
+    /// Index of the NEAREST track a point could belong to, if any.
+    private func nearestTrack(to world: SIMD3<Double>, normal: SIMD3<Double>) -> Int? {
+        var best: (index: Int, distance: Double)?
+        for (i, t) in tracks.enumerated() {
+            let d = simd_distance(t.world, world)
+            guard d < FixtureCapture.mergeM, simd_dot(t.normal, normal) > FixtureCapture.mergeNormalDot else { continue }
+            if best == nil || d < best!.distance { best = (i, d) }
+        }
+        return best?.index
+    }
+
+    /// Give a track that has just confirmed the next free display number.
+    private func numberIfConfirmed(_ index: Int) {
+        guard tracks.indices.contains(index), tracks[index].number == 0, tracks[index].confirmed else { return }
+        tracks[index].number = (tracks.map(\.number).max() ?? 0) + 1
     }
 
     // MARK: Manual placement
@@ -433,13 +483,11 @@ final class FixtureCapture {
     @discardableResult
     func addManual(world: SIMD3<Double>, normal: SIMD3<Double>) -> Int {
         rejected.removeAll { simd_distance($0, world) < FixtureCapture.mergeM * 2 }
-        if let index = tracks.firstIndex(where: {
-            simd_distance($0.world, world) < FixtureCapture.mergeM
-                && simd_dot($0.normal, normal) > FixtureCapture.mergeNormalDot
-        }) {
+        if let index = nearestTrack(to: world, normal: normal) {
             tracks[index].world = world
             tracks[index].normal = normal
             tracks[index].manual = true
+            numberIfConfirmed(index)
             return tracks[index].id
         }
         let id = nextTrackID
@@ -458,6 +506,7 @@ final class FixtureCapture {
             manual: true
         ))
         nextTrackID += 1
+        numberIfConfirmed(tracks.count - 1)
         return id
     }
 

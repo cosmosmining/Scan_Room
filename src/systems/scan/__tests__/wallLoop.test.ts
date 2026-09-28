@@ -107,6 +107,42 @@ describe('shoes against a wall', () => {
   });
 });
 
+describe('shoes against a wall of an L-shaped room', () => {
+  // (0,0)-(6000,0)-(6000,2000)-(2000,2000)-(2000,6000)-(0,6000). The middle of
+  // its walls, (2667, 2667), is OUTSIDE the room — which is what used to flip
+  // the reflex wall's idea of "outward", so the fragment clutter pushed into
+  // the room won.
+  const L: LoopSegment[] = [
+    { a: { x: 0, z: 0 }, b: { x: 6000, z: 0 } },
+    { a: { x: 6000, z: 0 }, b: { x: 6000, z: 2000 } },
+    { a: { x: 6000, z: 2000 }, b: { x: 4200, z: 2000 } },
+    // Shoes along x 2000..3800: RoomPlan fitted that stretch 150mm into the room.
+    { a: { x: 3800, z: 1850 }, b: { x: 2000, z: 1850 } },
+    { a: { x: 2000, z: 2000 }, b: { x: 2000, z: 6000 } },
+    { a: { x: 2000, z: 6000 }, b: { x: 0, z: 6000 } },
+    { a: { x: 0, z: 6000 }, b: { x: 0, z: 0 } },
+  ];
+
+  it('keeps the reflex wall where it is, not where the shoes are', () => {
+    const outline = wallLoop(L);
+    expect(outline).toHaveLength(6);
+    expect(maxDeviationFromZ(outline, 2000, 2000, 6000)).toBeLessThanOrEqual(1);
+    // 6 x 6 m minus the 4 x 4 m bite.
+    expect(area(outline)).toBeCloseTo(20_000_000, -4);
+  });
+
+  it('still takes the outermost fragment on the ordinary walls of the same room', () => {
+    const shoesOnOuterWall = [...L];
+    shoesOnOuterWall.splice(0, 1,
+      { a: { x: 0, z: 0 }, b: { x: 2500, z: 0 } },
+      { a: { x: 2600, z: 150 }, b: { x: 6000, z: 150 } },
+    );
+    const outline = wallLoop(shoesOnOuterWall);
+    expect(maxDeviationFromZ(outline, 0, 0, 6000)).toBeLessThanOrEqual(1);
+    expect(area(outline)).toBeCloseTo(20_000_000, -4);
+  });
+});
+
 describe('an occluded corner', () => {
   it('lands where the two walls meet, not where the scanner stopped short', () => {
     // A bin in the corner: both walls stop 600mm short of it. The corner is
@@ -239,6 +275,40 @@ describe('round pillars', () => {
     expect(pillars[0].depth).toBeCloseTo(400, -1);
   });
 
+  it('does NOT turn a rounded corner into a pillar', () => {
+    // A 5 x 4 m room whose (0,0) corner is rounded at R = 900mm, sampled every
+    // 15° the way FloorplanBuilder samples a curved surface.
+    const arc = roundColumn(900, 900, 900, 6, Math.PI, 1.5 * Math.PI);
+    const walls: LoopSegment[] = [
+      { a: { x: 900, z: 0 }, b: { x: 5000, z: 0 } },
+      { a: { x: 5000, z: 0 }, b: { x: 5000, z: 4000 } },
+      { a: { x: 5000, z: 4000 }, b: { x: 0, z: 4000 } },
+      { a: { x: 0, z: 4000 }, b: { x: 0, z: 900 } },
+      ...arc,
+    ];
+    const { outline, pillars } = analyseWalls(walls);
+    expect(pillars).toHaveLength(0);
+    // The facets are shorter than any wall, so the corner is squared off —
+    // within the 0.17 m² the rounding takes away, and never a column.
+    expect(Math.abs(area(outline) - 20_000_000)).toBeLessThan(200_000);
+  });
+
+  it('draws a column built into a corner as a notch in the walls', () => {
+    const walls: LoopSegment[] = [
+      { a: { x: 400, z: 0 }, b: { x: 4000, z: 0 } },
+      { a: { x: 4000, z: 0 }, b: { x: 4000, z: 3000 } },
+      { a: { x: 4000, z: 3000 }, b: { x: 0, z: 3000 } },
+      { a: { x: 0, z: 3000 }, b: { x: 0, z: 400 } },
+      // The column's two exposed faces.
+      { a: { x: 0, z: 400 }, b: { x: 400, z: 400 } },
+      { a: { x: 400, z: 400 }, b: { x: 400, z: 0 } },
+    ];
+    const { outline, pillars } = analyseWalls(walls);
+    expect(pillars).toHaveLength(0);
+    expect(outline).toHaveLength(6);
+    expect(area(outline)).toBeCloseTo(12_000_000 - 160_000, -3);
+  });
+
   it('does NOT turn a small alcove into a pillar', () => {
     // An alcove is part of the boundary — it opens the room outward. Its short
     // facets look like a column until you ask which side of them the room is.
@@ -267,6 +337,17 @@ describe('clutter by height', () => {
     const tallRect = rect(4000, 3000).map((s) => ({ ...s, heightMm: 2600, topMm: 2600 }));
     const { outline, clutterRejected } = analyseWalls([...tallRect, rack]);
     expect(clutterRejected).toBe(1);
+    expect(outline).toHaveLength(4);
+    expect(area(outline)).toBeCloseTo(12_000_000, -5);
+  });
+
+  it('keeps a low wall that IS the room’s edge — an attic knee wall', () => {
+    // 700mm high under a sloping roof, with nothing behind it: not clutter.
+    const walls = rect(4000, 3000).map((s, i) =>
+      i === 2 ? { ...s, heightMm: 700, topMm: 700 } : { ...s, heightMm: 2600, topMm: 2600 },
+    );
+    const { outline, clutterRejected } = analyseWalls(walls);
+    expect(clutterRejected).toBe(0);
     expect(outline).toHaveLength(4);
     expect(area(outline)).toBeCloseTo(12_000_000, -5);
   });

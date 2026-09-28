@@ -84,20 +84,25 @@ export function PhotorealRender({
         }];
       });
 
-      const furniture: RenderItem[] = designItems.map((placed) => {
+      const furniture: RenderItem[] = designItems.flatMap((placed) => {
         const item = furnitureItem(placed.itemId);
-        const size = placedSize(placed);
-        return {
+        // A scanned piece is a measurement of what is in the room TODAY — most
+        // of it is going out before the kitchen goes in — and has no model, so
+        // it would only ever render as a grey box in a picture of the new room.
+        // Columns stay: they are the room, and render as the box they occupy.
+        if (!item && !placed.column) return [];
+        // A column meets the ceiling, whatever height the room is now.
+        const size = placed.column ? { ...placedSize(placed), height: room.height } : placedSize(placed);
+        return [{
           // The render server resolves a model by catalogue id, the same id the
-          // iPad sends for the same piece. A scanned measurement has no model,
-          // so it renders as the box it was measured as.
+          // iPad sends for the same piece.
           model: item?.id ?? null,
           x: placed.position.x / 1000,
           z: placed.position.z / 1000,
           rotationY: placed.rotationY,
           size: [size.width / 1000, size.height / 1000, size.depth / 1000] as [number, number, number],
           finish: placed.finish ?? null,
-        };
+        }];
       });
 
       const items: RenderItem[] = [...modules, ...furniture];

@@ -277,12 +277,58 @@ export interface SocketTrack {
    */
   bestFeatures: number;
   bestPlatePx: number;
+  /**
+   * Total weight of the looks averaged into `world`. Each look counts
+   * 1/range²: a reading's error grows with distance, so a close look settles
+   * the position and a distant one only nudges it. With a plain mean, one
+   * far-off sighting could drag a confirmed marker off its socket.
+   */
+  weight: number;
+  /** Pinned by hand. Detections corroborate it; they never move it. */
+  manual?: boolean;
+  /**
+   * The number shown beside the marker, fixed the moment the track first
+   * confirms (0 until then). Numbering by list position renumbered every later
+   * socket whenever an earlier-created one confirmed late — labels hopping
+   * from socket to socket mid-scan.
+   */
+  number: number;
 }
 
 /** Power outlet, data/switch plate, blank cover — or unknown if never seen close. */
 export function trackKind(track: SocketTrack): PlateKind {
   return classifyPlate(track.bestFeatures, track.bestPlatePx);
 }
+
+/** Looks closer than this are weighted as if taken from here. */
+const MIN_WEIGHT_RANGE_M = 0.3;
+
+/** Inverse-variance weight of one look: its error grows with range. */
+export function lookWeight(rangeM: number): number {
+  return 1 / Math.max(rangeM, MIN_WEIGHT_RANGE_M) ** 2;
+}
+
+/** The track a sighting belongs to: the NEAREST that qualifies, not the first. */
+function nearestTrack(tracks: SocketTrack[], world: Vec3, normal: Vec3): SocketTrack | undefined {
+  let best: SocketTrack | undefined;
+  let bestD = Infinity;
+  for (const t of tracks) {
+    const d = distance3(t.world, world);
+    if (d < TRACK_POLICY.mergeM && dot3(t.normal, normal) > TRACK_POLICY.mergeNormalDot && d < bestD) {
+      best = t;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+/** Give a track that has just confirmed the next free display number. */
+function numberIfConfirmed(tracks: SocketTrack[], track: SocketTrack): void {
+  if (track.number > 0 || !isConfirmed(track)) return;
+  track.number = tracks.reduce((m, t) => Math.max(m, t.number), 0) + 1;
+}
+
+const nextId = (tracks: SocketTrack[]) => tracks.reduce((m, t) => Math.max(m, t.id), 0) + 1;
 
 /** Fold one measured detection into a running set of tracks (mutates `tracks`). */
 export function integrateSighting(
@@ -291,18 +337,22 @@ export function integrateSighting(
   detection: Pick<SocketDetection, 'score' | 'holes' | 'platePx'>,
   eye: Vec3,
 ): SocketTrack[] {
-  const match = tracks.find(
-    (t) =>
-      distance3(t.world, geometry.world) < TRACK_POLICY.mergeM &&
-      dot3(t.normal, geometry.normal) > TRACK_POLICY.mergeNormalDot,
-  );
+  // Nearest, so a sighting between two sockets side by side joins the one it
+  // is actually on rather than whichever happened to be created first.
+  const match = nearestTrack(tracks, geometry.world, geometry.normal);
+  const w = lookWeight(geometry.rangeM);
   if (match) {
-    const n = match.hits;
-    // Running mean: every frame nudges the estimate, none dominates it.
-    match.world = scale3(add3(scale3(match.world, n), geometry.world), 1 / (n + 1));
-    match.normal = normalize3(add3(scale3(match.normal, n), geometry.normal));
-    match.widthMm = (match.widthMm * n + geometry.widthMm) / (n + 1);
-    match.heightMm = (match.heightMm * n + geometry.heightMm) / (n + 1);
+    // Weighted running mean (see `SocketTrack.weight`). A hand-placed pin is
+    // where the person said it is, so a detection only corroborates it.
+    if (!match.manual) {
+      const W = match.weight;
+      const k = 1 / (W + w);
+      match.world = scale3(add3(scale3(match.world, W), scale3(geometry.world, w)), k);
+      match.normal = normalize3(add3(scale3(match.normal, W), scale3(geometry.normal, w)));
+      match.widthMm = (match.widthMm * W + geometry.widthMm * w) * k;
+      match.heightMm = (match.heightMm * W + geometry.heightMm * w) * k;
+      match.weight = W + w;
+    }
     match.score = Math.max(match.score, detection.score);
     // Classification comes from the closest look, not the average.
     if (detection.platePx > match.bestPlatePx) {
@@ -312,10 +362,11 @@ export function integrateSighting(
     match.hits += 1;
     if (match.viewpoints.length < 12) match.viewpoints.push(eye);
     match.baselineM = spread(match.viewpoints);
+    numberIfConfirmed(tracks, match);
     return tracks;
   }
   tracks.push({
-    id: tracks.length + 1,
+    id: nextId(tracks),
     world: geometry.world,
     normal: geometry.normal,
     widthMm: geometry.widthMm,
@@ -326,12 +377,49 @@ export function integrateSighting(
     viewpoints: [eye],
     bestFeatures: detection.holes,
     bestPlatePx: detection.platePx,
+    weight: w,
+    number: 0,
   });
   return tracks;
 }
 
+/**
+ * The user pointed at a socket. A track already there becomes theirs, at the
+ * spot they chose; otherwise a new one starts. Either way it is confirmed and
+ * numbered at once — a person saying "there" needs no corroboration.
+ */
+export function pinTrack(tracks: SocketTrack[], world: Vec3, normal: Vec3): SocketTrack {
+  let track = nearestTrack(tracks, world, normal);
+  if (track) {
+    track.world = world;
+    track.normal = normal;
+    track.manual = true;
+  } else {
+    track = {
+      id: nextId(tracks),
+      world,
+      normal,
+      widthMm: 86,
+      heightMm: 86,
+      score: 1,
+      hits: 1,
+      baselineM: 0,
+      viewpoints: [],
+      bestFeatures: 0,
+      bestPlatePx: 0,
+      weight: 0,
+      manual: true,
+      number: 0,
+    };
+    tracks.push(track);
+  }
+  numberIfConfirmed(tracks, track);
+  return track;
+}
+
 /** Seen often enough, from far enough apart, to be a thing in the room. */
 export function isConfirmed(track: SocketTrack): boolean {
+  if (track.manual) return true;
   return (
     track.hits >= TRACK_POLICY.confirmHits &&
     (track.baselineM >= TRACK_POLICY.confirmBaselineM ||
@@ -339,8 +427,9 @@ export function isConfirmed(track: SocketTrack): boolean {
   );
 }
 
+/** Confirmed tracks in the order their numbers were given — stable as more confirm. */
 export function confirmedTracks(tracks: SocketTrack[]): SocketTrack[] {
-  return tracks.filter(isConfirmed);
+  return tracks.filter(isConfirmed).sort((a, b) => a.number - b.number);
 }
 
 /** Confidence for the placed fixture: corroboration first, image score second. */

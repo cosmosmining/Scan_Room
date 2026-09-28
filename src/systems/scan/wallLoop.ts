@@ -166,20 +166,51 @@ const endpoints = (line: WallLine): [LoopPoint, LoopPoint] => [
  * is the mouth of an alcove or a chimney breast, and bridging it would delete
  * real architecture from the plan.
  */
-function mergeCoplanar(lines: WallLine[], o: Required<WallLoopOptions>): WallLine[] {
+function mergeCoplanar(lines: WallLine[], context: LoopSegment[], o: Required<WallLoopOptions>): WallLine[] {
   const cosLimit = Math.cos((o.parallelDeg * Math.PI) / 180);
 
-  /** Does a wall NOT parallel to `dir` end within reach of `p`? */
-  const turnsOffAt = (p: LoopPoint, dir: LoopPoint): boolean =>
-    lines.some(
-      (l) =>
-        Math.abs(dot(l.dir, dir)) < cosLimit &&
-        endpoints(l).some((q) => dist(p, q) <= CORNER_REACH_MM),
-    );
+  /**
+   * Is the gap [lo, hi] along `host` the MOUTH of something — an alcove, a
+   * chimney breast, the notch of a U-shaped room — rather than an empty stretch
+   * hidden behind clutter? It is when two different full-height walls turn off
+   * the host's line inside it.
+   *
+   * Measured to survive occlusion, which is exactly what a gap is made of: a
+   * wall counts when its LINE crosses the host line within the gap and it comes
+   * within reach of it, not only when its endpoint touches — the last piece of
+   * a notch wall is often a stub too short to be a wall on its own, or missing,
+   * leaving the rest ending short of the corner. Stubs count here for the same
+   * reason. Low surfaces do not (the side of a cabinet is not a wall), and the
+   * two crossings must be apart, so one wall reported in two pieces is one.
+   */
+  const isMouth = (host: WallLine, lo: number, hi: number): boolean => {
+    const crossings: number[] = [];
+    for (const s of context) {
+      if (dist(s.a, s.b) < STUB_MM) continue;
+      if ((s.heightMm !== undefined && s.heightMm < o.minWallHeightMm) || (s.topMm !== undefined && s.topMm < o.minWallTopMm)) continue;
+      const d = unit(sub(s.b, s.a));
+      const cross = host.dir.x * d.z - host.dir.z * d.x;
+      if (Math.abs(cross) < Math.sin((o.minCornerDeg * Math.PI) / 180)) continue;
+      const near = Math.min(
+        Math.abs(dot(sub(s.a, host.origin), host.inward)),
+        Math.abs(dot(sub(s.b, host.origin), host.inward)),
+      );
+      if (near > MOUTH_REACH_MM) continue;
+      // Where the wall's line meets the host's line, as a distance along it.
+      const w = sub(s.a, host.origin);
+      const t = (w.x * d.z - w.z * d.x) / cross;
+      if (t >= lo - CORNER_REACH_MM && t <= hi + CORNER_REACH_MM) crossings.push(t);
+    }
+    return crossings.length >= 2 && Math.max(...crossings) - Math.min(...crossings) >= MOUTH_MIN_WIDTH_MM;
+  };
 
   const merged: WallLine[] = [];
   for (const line of lines) {
-    let joined = false;
+    // Of the walls this fragment could belong to, the one it is closest to
+    // along its length — so the result does not depend on the order RoomPlan
+    // happened to list the fragments in.
+    let bestHost = -1;
+    let bestGap = Infinity;
     for (let i = 0; i < merged.length; i++) {
       const host = merged[i];
       // Same heading? Allow either direction — a fragment can be reported
@@ -193,46 +224,92 @@ function mergeCoplanar(lines: WallLine[], o: Required<WallLoopOptions>): WallLin
       const [la, lb] = endpoints(line);
       const ta = dot(sub(la, host.origin), host.dir);
       const tb = dot(sub(lb, host.origin), host.dir);
-      const lo = Math.min(ta, tb);
-      const hi = Math.max(ta, tb);
-      let gapEnds: [LoopPoint, LoopPoint] | null = null;
-      if (lo > host.t1) {
-        gapEnds = [endpoints(host)[1], ta < tb ? la : lb];
-      } else if (hi < host.t0) {
-        gapEnds = [endpoints(host)[0], ta > tb ? la : lb];
+      const lineLo = Math.min(ta, tb);
+      const lineHi = Math.max(ta, tb);
+      // The empty stretch between them along the host, if they do not overlap.
+      const gapLo = lineLo > host.t1 ? host.t1 : lineHi < host.t0 ? lineHi : 0;
+      const gapHi = lineLo > host.t1 ? lineLo : lineHi < host.t0 ? host.t0 : 0;
+      const gap = gapHi - gapLo;
+      if (gap > 0 && isMouth(host, gapLo, gapHi)) continue;
+      if (gap < bestGap) {
+        bestGap = gap;
+        bestHost = i;
       }
-      if (gapEnds && turnsOffAt(gapEnds[0], host.dir) && turnsOffAt(gapEnds[1], host.dir)) {
-        continue;
-      }
-
-      // Same wall. Keep whichever is further OUT: a negative inward offset is
-      // further from the room centre, which occlusion cannot manufacture.
-      const outward = offset < 0;
-      const dir = host.dir;
-      const origin = outward
-        ? { x: host.origin.x + host.inward.x * offset, z: host.origin.z + host.inward.z * offset }
-        : host.origin;
-
-      // Union the observed extents, re-projected onto the kept line.
-      const ts = [...endpoints(host), ...endpoints(line)].map((p) => dot(sub(p, origin), dir));
-      merged[i] = {
-        origin,
-        dir,
-        inward: host.inward,
-        t0: Math.min(...ts),
-        t1: Math.max(...ts),
-        support: host.support + line.support,
-      };
-      joined = true;
-      break;
     }
-    if (!joined) merged.push(line);
+
+    if (bestHost < 0) {
+      merged.push(line);
+      continue;
+    }
+
+    // Same wall. Keep whichever is further OUT: a negative inward offset is
+    // further from the room, which occlusion cannot manufacture.
+    const host = merged[bestHost];
+    const offset = dot(sub(line.origin, host.origin), host.inward);
+    const dir = host.dir;
+    const origin = offset < 0
+      ? { x: host.origin.x + host.inward.x * offset, z: host.origin.z + host.inward.z * offset }
+      : host.origin;
+
+    // Union the observed extents, re-projected onto the kept line.
+    const ts = [...endpoints(host), ...endpoints(line)].map((p) => dot(sub(p, origin), dir));
+    merged[bestHost] = {
+      origin,
+      dir,
+      inward: host.inward,
+      t0: Math.min(...ts),
+      t1: Math.max(...ts),
+      support: host.support + line.support,
+    };
   }
   return merged;
 }
 
 /** A wall ending within this of another wall's end is meeting it at a corner. */
 const CORNER_REACH_MM = 200;
+/** A wall turning off a gap may stop this short of the line (occlusion). */
+const MOUTH_REACH_MM = 1200;
+/** The two sides of a mouth are at least this far apart. */
+const MOUTH_MIN_WIDTH_MM = 300;
+/** Shorter than this is noise, even as evidence of a mouth. */
+const STUB_MM = 60;
+/**
+ * The two corners of a step between `here` and `next`, from a surface seen
+ * between them that crosses both — the step's return — or null.
+ */
+function returnBetween(
+  here: WallLine,
+  next: WallLine,
+  hereEnd: LoopPoint,
+  nextStart: LoopPoint,
+  context: LoopSegment[],
+  o: Required<WallLoopOptions>,
+): [LoopPoint, LoopPoint] | null {
+  let best: [LoopPoint, LoopPoint] | null = null;
+  let bestD = Infinity;
+  for (const s of context) {
+    const len = dist(s.a, s.b);
+    if (len < STUB_MM) continue;
+    const line: WallLine = { origin: s.a, dir: unit(sub(s.b, s.a)), inward: { x: 0, z: 0 }, t0: 0, t1: len, support: len };
+    const c1 = intersect(here, line, o.minCornerDeg);
+    const c2 = intersect(line, next, o.minCornerDeg);
+    if (!c1 || !c2) continue;
+    const mid = { x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 };
+    // It must be part of THIS step: near both ends, and its corners too.
+    if (dist(c1, hereEnd) > o.maxJumpMm || dist(c2, nextStart) > o.maxJumpMm) continue;
+    const d = dist(mid, hereEnd) + dist(mid, nextStart);
+    if (d <= 2 * o.maxJumpMm && d < bestD) {
+      bestD = d;
+      best = [c1, c2];
+    }
+  }
+  return best;
+}
+
+/** What connecting two walls without a corner between them costs the chain. */
+const JOG_PENALTY_MM = 500;
+/** How much of a wall occlusion may hide at a corner and still be a corner. */
+const OCCLUDED_CORNER_MM = 600;
 
 /** Where two lines cross, or null when they are too near parallel to say. */
 function intersect(a: WallLine, b: WallLine, minCornerDeg: number): LoopPoint | null {
@@ -345,7 +422,10 @@ function fitPillar(facets: LoopSegment[]): Pillar {
     return { center: circle.center, shape: 'round', width: d, depth: d, rotation: 0 };
   }
   // A box, aligned with its longest face.
-  const longest = facets.reduce((a, b) => (dist(b.a, b.b) > dist(a.a, a.b) ? b : a));
+  // Longest face, to the micron, first one on a tie — a square column's four
+  // faces tie, and the Swift twin must pick the same one.
+  const mm = (f: LoopSegment) => Math.round(dist(f.a, f.b) * 1000);
+  const longest = facets.reduce((a, b) => (mm(b) > mm(a) ? b : a));
   const dir = unit(sub(longest.b, longest.a));
   const perp = { x: -dir.z, z: dir.x };
   const us = pts.map((p) => dot(p, dir));
@@ -406,25 +486,35 @@ export function analyseWalls(segments: LoopSegment[], options: WallLoopOptions =
 
   // 1 — CLUTTER BY HEIGHT. Only surfaces that report a height can be judged;
   // a trace with no heights (manual, WebXR taps) passes through untouched.
+  // Low is not enough on its own: an attic's knee wall is low and is still the
+  // room's edge. Clutter is low AND stands in front of a real wall — the same
+  // asymmetry as everywhere else here — so a low surface is only dropped when
+  // a tall wall runs parallel right behind it.
   const tallEnough = (s: LoopSegment) =>
     (s.heightMm === undefined || s.heightMm >= o.minWallHeightMm) &&
     (s.topMm === undefined || s.topMm >= o.minWallTopMm);
   const tall = segments.filter(tallEnough);
+  const clutter = (s: LoopSegment) => !tallEnough(s) && standsInFront(s, tall, o);
   // If that leaves no room at all, the heights are what is wrong, not the room.
-  const walls = tall.length >= 3 ? tall : segments;
+  const walls = tall.length >= 3 ? segments.filter((s) => !clutter(s)) : segments;
   const clutterRejected = segments.length - walls.length;
 
   // 2 — PILLARS. A column's facets, woven into the outline, are what turned a
   // round pillar into a spike across the plan: greedy chaining visits the
-  // column and comes back. Pulled out first, then confirmed against the room.
-  const clusters = pillarClusters(walls, o);
+  // column and comes back. So they are pulled out first — but only after the
+  // clusters that are plainly part of the room (see `clusterIsBoundary`) have
+  // been put back. The outline the rest are judged against has to be the
+  // room's: built without one of its own corners it can stop short, and a real
+  // column then looks as if it stands outside the room.
+  const clusters = pillarClusters(walls, o).filter((idx) => !clusterIsBoundary(idx, walls, o));
   const inCluster = new Set(clusters.flat());
   const rest = walls.filter((_, i) => !inCluster.has(i));
   let outline = buildOutline(rest, o);
 
-  // A true pillar stands INSIDE the room it was taken out of. A cluster that
-  // does not — a small bay, a corner of two short walls, an alcove — was part
-  // of the boundary after all, so it goes back and the outline is rebuilt.
+  // A true pillar stands INSIDE the room it was taken out of, clear of its
+  // walls and not wedged into a corner. A cluster that does not — an alcove, a
+  // small bay, a rounded corner — was part of the boundary after all, so it
+  // goes back and the outline is rebuilt.
   const accepted: number[][] = [];
   const rejected: number[] = [];
   for (const idx of clusters) {
@@ -437,7 +527,11 @@ export function analyseWalls(segments: LoopSegment[], options: WallLoopOptions =
       outline.length >= 3 &&
       inside(c, outline) &&
       outline.every((p, k) => distToSegment(c, p, outline[(k + 1) % outline.length]) >= 50);
-    if (clearOfEdge) accepted.push(idx);
+    // A column stands free or against ONE wall. Something that reaches two
+    // walls meeting at a corner is the corner itself — a rounded corner, or a
+    // column built into it — and belongs in the boundary. Without this a
+    // rounded corner came back as a 1.2 m "pillar" standing in the corner.
+    if (clearOfEdge && !touchesCorner(pts, outline, o)) accepted.push(idx);
     else rejected.push(...idx);
   }
   if (rejected.length) {
@@ -452,6 +546,139 @@ export function analyseWalls(segments: LoopSegment[], options: WallLoopOptions =
   };
 }
 
+/** Clutter this far or less in front of a wall is standing against it. */
+const CLUTTER_REACH_MM = 1200;
+
+/**
+ * Does low surface `s` stand in front of a tall wall: one running parallel
+ * within reach of it, whose extent covers most of it?
+ *
+ * The extent is the whole wall line — every tall piece on it, AND the gaps
+ * between them — because clutter hides exactly the stretch of wall behind it:
+ * a shoe rack arrives with the wall behind it missing, and measured against the
+ * pieces alone it covered nothing and survived as a "wall".
+ */
+function standsInFront(s: LoopSegment, tall: LoopSegment[], o: Required<WallLoopOptions>): boolean {
+  const sLen = dist(s.a, s.b);
+  if (sLen < 1) return false;
+  const d = unit(sub(s.b, s.a));
+  const cosLimit = Math.cos((o.parallelDeg * Math.PI) / 180);
+  const mid = { x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 };
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const t of tall) {
+    const tLen = dist(t.a, t.b);
+    if (tLen < 1) continue;
+    const td = unit(sub(t.b, t.a));
+    if (Math.abs(dot(td, d)) < cosLimit) continue;
+    const across = Math.abs(-td.z * (mid.x - t.a.x) + td.x * (mid.z - t.a.z));
+    if (across > CLUTTER_REACH_MM) continue;
+    // The tall piece's extent, measured along the low surface.
+    const ta = dot(sub(t.a, s.a), d);
+    const tb = dot(sub(t.b, s.a), d);
+    lo = Math.min(lo, ta, tb);
+    hi = Math.max(hi, ta, tb);
+  }
+  // …and on past its last visible piece, for the same reason: the stretch the
+  // clutter hides can be the wall's end.
+  const overlap = Math.min(hi + o.maxJumpMm, sLen) - Math.max(lo - o.maxJumpMm, 0);
+  return overlap >= 0.5 * sLen;
+}
+
+/**
+ * Is this cluster of short pieces part of the room's BOUNDARY rather than a
+ * column standing in it?
+ *
+ * Seen locally the two cannot be told apart — two wall pieces meeting at an
+ * inside corner look exactly like two faces of a square column. What differs
+ * is how they connect. A column's faces close into a ring, or leave loose ends
+ * that touch nothing (it stands free) or one wall (it is built into it). A
+ * corner of the room carries on into the rest of it: its loose ends meet walls
+ * on two DIFFERENT lines. Taken for a column, such a corner was cut out of the
+ * outline — the notch of a U-shaped room went with it, and a column appeared
+ * where the notch should have been.
+ */
+function clusterIsBoundary(idx: number[], walls: LoopSegment[], o: Required<WallLoopOptions>): boolean {
+  const cosLimit = Math.cos((o.parallelDeg * Math.PI) / 180);
+  const facets = idx.map((i) => walls[i]);
+  const ends = facets.flatMap((f, k) => [{ k, p: f.a, q: f.b }, { k, p: f.b, q: f.a }]);
+
+  // Pair up the ends that meet (closest first); the rest are loose.
+  const pairs: [number, number, number][] = [];
+  for (let i = 0; i < ends.length; i++) {
+    for (let j = i + 1; j < ends.length; j++) {
+      if (ends[i].k !== ends[j].k) pairs.push([dist(ends[i].p, ends[j].p), i, j]);
+    }
+  }
+  pairs.sort((a, b) => a[0] - b[0]);
+  const joined = ends.map(() => false);
+  for (const [d, i, j] of pairs) {
+    if (d > o.pillarLinkMm) break;
+    if (!joined[i] && !joined[j]) joined[i] = joined[j] = true;
+  }
+  const loose = ends.filter((_, i) => !joined[i]);
+  // A closed ring — or one closed but for a small gap — is a column.
+  if (loose.length === 0) return false;
+  if (loose.length === 2 && dist(loose[0].p, loose[1].p) <= o.pillarLinkMm) return false;
+
+  const inCluster = new Set(idx);
+  const others = walls.filter((s, i) => !inCluster.has(i) && dist(s.a, s.b) >= STUB_MM);
+  /**
+   * The walls a loose end runs into: one ending near it; one its own piece
+   * carries straight on into; or one its piece would meet at a corner hidden
+   * behind clutter — carried on, it crosses that wall's line close to where
+   * that wall stops.
+   */
+  const meets = (end: { p: LoopPoint; q: LoopPoint }): LoopSegment[] => {
+    const out = unit(sub(end.p, end.q));
+    return others.filter((s) => {
+      if (Math.min(dist(end.p, s.a), dist(end.p, s.b)) <= CORNER_REACH_MM) return true;
+      const d = unit(sub(s.b, s.a));
+      const cross = out.x * d.z - out.z * d.x;
+      if (Math.abs(cross) >= Math.sin((o.minCornerDeg * Math.PI) / 180)) {
+        const w = sub(s.a, end.p);
+        const u = (w.x * d.z - w.z * d.x) / cross;
+        if (u < -CORNER_REACH_MM || u > o.maxJumpMm) return false;
+        const x = { x: end.p.x + out.x * u, z: end.p.z + out.z * u };
+        return Math.min(dist(x, s.a), dist(x, s.b)) <= OCCLUDED_CORNER_MM;
+      }
+      if (Math.abs(dot(sub(s.a, end.p), { x: -out.z, z: out.x })) > o.coplanarMm) return false;
+      const ta = dot(sub(s.a, end.p), out);
+      const tb = dot(sub(s.b, end.p), out);
+      return Math.min(ta, tb) >= -CORNER_REACH_MM && Math.min(ta, tb) <= o.maxJumpMm;
+    });
+  };
+  const sameLine = (s: LoopSegment, t: LoopSegment): boolean => {
+    const d = unit(sub(s.b, s.a));
+    if (Math.abs(dot(d, unit(sub(t.b, t.a)))) < cosLimit) return false;
+    const mid = { x: (t.a.x + t.b.x) / 2, z: (t.a.z + t.b.z) / 2 };
+    return Math.abs(dot(sub(mid, s.a), { x: -d.z, z: d.x })) <= o.coplanarMm;
+  };
+  const met = loose.map(meets);
+  for (let i = 0; i < met.length; i++) {
+    for (let j = i + 1; j < met.length; j++) {
+      if (met[i].some((s) => met[j].some((t) => !sameLine(s, t)))) return true;
+    }
+  }
+  return false;
+}
+
+/** A pillar within this of a wall is touching it. */
+const TOUCH_MM = 100;
+
+/** Do these points touch two outline edges that are not parallel? */
+function touchesCorner(pts: LoopPoint[], outline: LoopPoint[], o: Required<WallLoopOptions>): boolean {
+  const cosLimit = Math.cos((o.parallelDeg * Math.PI) / 180);
+  const touched: LoopPoint[] = [];
+  for (let k = 0; k < outline.length; k++) {
+    const a = outline[k];
+    const b = outline[(k + 1) % outline.length];
+    if (dist(a, b) < 1) continue;
+    if (pts.some((p) => distToSegment(p, a, b) <= TOUCH_MM)) touched.push(unit(sub(b, a)));
+  }
+  return touched.some((d, i) => touched.some((e, j) => j > i && Math.abs(dot(d, e)) < cosLimit));
+}
+
 /** Wall segments → an ordered closed outline. See `analyseWalls` for the rest. */
 export function wallLoop(segments: LoopSegment[], options: WallLoopOptions = {}): LoopPoint[] {
   return analyseWalls(segments, options).outline;
@@ -463,54 +690,121 @@ export function wallLoop(segments: LoopSegment[], options: WallLoopOptions = {})
  * Returns the segments' own endpoints when there is nothing sensible to build
  * (fewer than three usable walls), so a degenerate scan degrades to what the
  * scanner said rather than to nothing.
+ *
+ * TWO PASSES, because "keep the OUTERMOST fragment" needs to know which side
+ * of each wall the room is on. The first pass guesses it from the middle of
+ * the walls — exact for a convex room, but in an L-shaped room that middle can
+ * fall OUTSIDE the room, and then the reflex wall's "outermost" fragment is the
+ * one clutter pushed INTO the room: the shoes bug again, in every non-convex
+ * room. So the first pass's outline is asked instead — a point just to one side
+ * of each wall is either in the room or not — and the outline is rebuilt with
+ * those answers. Where the answer is unclear the first guess stands.
  */
 function buildOutline(segments: LoopSegment[], o: Required<WallLoopOptions>): LoopPoint[] {
   const usable = segments.filter((s) => dist(s.a, s.b) >= o.minSegmentMm);
-  if (usable.length < 3) return segments.flatMap((s) => [s.a, s.b]);
+  const fallback = () => segments.flatMap((s) => [s.a, s.b]);
+  if (usable.length < 3) return fallback();
 
-  // The room's rough middle, used only to decide which way is "in".
+  // Pass 1 — which way is "in", judged from the room's rough middle.
   const mids = usable.map((s) => ({ x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 }));
   const centre = {
     x: mids.reduce((n, p) => n + p.x, 0) / mids.length,
     z: mids.reduce((n, p) => n + p.z, 0) / mids.length,
   };
-
-  const lines: WallLine[] = usable.map((s) => {
+  const guessed = usable.map((s, i) => {
     const dir = unit(sub(s.b, s.a));
-    let inward = { x: -dir.z, z: dir.x };
-    const mid = { x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 };
-    if (dot(inward, sub(centre, mid)) < 0) inward = { x: -inward.x, z: -inward.z };
+    const left = { x: -dir.z, z: dir.x };
+    return dot(left, sub(centre, mids[i])) >= 0 ? left : { x: -left.x, z: -left.z };
+  });
+  const first = outlineFrom(usable, guessed, segments, o);
+  if (!first) return usable.flatMap((s) => [s.a, s.b]);
+
+  // Pass 2 — which way is "in", asked of the room pass 1 found.
+  let changed = false;
+  const asked = usable.map((s, i) => {
+    const side = roomSide(s, mids[i], first);
+    if (!side || dot(side, guessed[i]) > 0) return guessed[i];
+    changed = true;
+    return side;
+  });
+  if (!changed) return first;
+  return outlineFrom(usable, asked, segments, o) ?? first;
+}
+
+/**
+ * The unit normal of `s` that points into `room`, or null when it cannot be
+ * told: a point a little way off the wall is inside the room on one side and
+ * not on the other. Several distances, because the first outline can be off by
+ * a fragment's width near the wall and a small room is narrow far from it.
+ */
+function roomSide(s: LoopSegment, mid: LoopPoint, room: LoopPoint[]): LoopPoint | null {
+  const dir = unit(sub(s.b, s.a));
+  const left = { x: -dir.z, z: dir.x };
+  for (const d of [250, 500, 1000]) {
+    const l = inside({ x: mid.x + left.x * d, z: mid.z + left.z * d }, room);
+    const r = inside({ x: mid.x - left.x * d, z: mid.z - left.z * d }, room);
+    if (l !== r) return l ? left : { x: -left.x, z: -left.z };
+  }
+  return null;
+}
+
+/** One pass: merge, chain, corner. Null when no loop can be made. */
+function outlineFrom(
+  usable: LoopSegment[],
+  inwards: LoopPoint[],
+  context: LoopSegment[],
+  o: Required<WallLoopOptions>,
+): LoopPoint[] | null {
+  const lines: WallLine[] = usable.map((s, i) => {
     const support = dist(s.a, s.b);
-    return { origin: s.a, dir, inward, t0: 0, t1: support, support };
+    return { origin: s.a, dir: unit(sub(s.b, s.a)), inward: inwards[i], t0: 0, t1: support, support };
   });
 
-  const walls = mergeCoplanar(lines, o);
-  if (walls.length < 3) return usable.flatMap((s) => [s.a, s.b]);
+  const walls = mergeCoplanar(lines, context, o);
+  if (walls.length < 3) return null;
 
   // Order them into a loop, starting from the longest — the wall most likely to
   // be reported correctly, and the best anchor for everything chained off it.
+  // Ties (a rectangle's opposite walls) break by list order, and support is
+  // compared to the micron so the Swift twin, whose arithmetic differs in the
+  // last bits, starts from the same wall.
   const remaining = walls.slice();
-  remaining.sort((a, b) => b.support - a.support);
+  remaining.sort((a, b) => Math.round(b.support * 1000) - Math.round(a.support * 1000));
   const ordered: WallLine[] = [remaining.shift() as WallLine];
 
   for (;;) {
-    const tail = endpoints(ordered[ordered.length - 1])[1];
+    const current = ordered[ordered.length - 1];
+    const tail = endpoints(current)[1];
+    // The next wall is the one reached by the shortest path THROUGH THE CORNER
+    // the two would form — where their lines meet — not simply the nearest
+    // loose end. When clutter hides the end of a wall, the nearest end can
+    // belong to a wall running parallel to it on the far side of a notch; two
+    // parallel walls cannot meet at a corner, so such a wall only wins when
+    // nothing forms a corner at all (a jog whose return went unseen).
     let best = -1;
     let bestFlip = false;
-    let bestDist = Infinity;
+    let bestCost = Infinity;
     for (let i = 0; i < remaining.length; i++) {
       const [p, q] = endpoints(remaining[i]);
-      const dp = dist(tail, p);
-      const dq = dist(tail, q);
-      if (dp < bestDist) { bestDist = dp; best = i; bestFlip = false; }
-      if (dq < bestDist) { bestDist = dq; best = i; bestFlip = true; }
+      const corner = intersect(current, remaining[i], o.minCornerDeg);
+      let cost = Math.min(dist(tail, p), dist(tail, q)) + JOG_PENALTY_MM;
+      let flip = dist(tail, q) < dist(tail, p);
+      if (corner && dot(sub(corner, tail), current.dir) >= -CORNER_REACH_MM) {
+        const viaCorner = dist(tail, corner) + Math.min(dist(corner, p), dist(corner, q));
+        if (viaCorner < cost) {
+          cost = viaCorner;
+          flip = dist(corner, q) < dist(corner, p);
+        }
+      }
+      if (cost < bestCost) { bestCost = cost; best = i; bestFlip = flip; }
     }
     if (best < 0) break;
 
     // A gap wider than a doorway is not a corner — unless the two wall lines
     // genuinely cross nearby, which is what an occluded corner looks like.
+    const bestDist = Math.min(...endpoints(remaining[best]).map((p) => dist(tail, p)));
     if (bestDist > o.maxJumpMm) {
-      const meeting = intersect(ordered[ordered.length - 1], remaining[best], o.minCornerDeg);
+      const meeting = intersect(current, remaining[best], o.minCornerDeg);
       const reachable =
         meeting !== null &&
         dist(meeting, tail) <= o.maxJumpMm * 2 &&
@@ -526,7 +820,7 @@ function buildOutline(segments: LoopSegment[], o: Required<WallLoopOptions>): Lo
     );
   }
 
-  if (ordered.length < 3) return usable.flatMap((s) => [s.a, s.b]);
+  if (ordered.length < 3) return null;
 
   // Corners by INTERSECTION. A corner hidden behind a bin is still exactly
   // where its two walls meet, and no amount of occlusion moves that.
@@ -539,12 +833,21 @@ function buildOutline(segments: LoopSegment[], o: Required<WallLoopOptions>): Lo
     const [nextStart] = endpoints(next);
     if (corner && dist(corner, hereEnd) <= o.maxJumpMm * 3) {
       out.push(corner);
-    } else {
-      // Near-parallel, or a corner implausibly far away: keep BOTH endpoints so
-      // the jog is visible and correctable, rather than fusing it into a chord.
-      out.push(hereEnd);
-      if (dist(hereEnd, nextStart) > 1) out.push(nextStart);
+      continue;
     }
+    // Two walls with no corner between them are a step, and a step has a
+    // return. A short return is often seen only as a stub too short to be a
+    // wall on its own — but its LINE is still known, and it gives the step
+    // both of its real corners instead of a diagonal.
+    const step = returnBetween(here, next, hereEnd, nextStart, context, o);
+    if (step) {
+      out.push(...step);
+      continue;
+    }
+    // Nothing to go on: keep BOTH endpoints so the jog is visible and
+    // correctable, rather than fusing it into a chord.
+    out.push(hereEnd);
+    if (dist(hereEnd, nextStart) > 1) out.push(nextStart);
   }
   return out;
 }

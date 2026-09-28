@@ -42,6 +42,8 @@ export {
 export {
   measurePlate,
   integrateSighting,
+  pinTrack,
+  lookWeight,
   confirmedTracks,
   isConfirmed,
   trackConfidence,

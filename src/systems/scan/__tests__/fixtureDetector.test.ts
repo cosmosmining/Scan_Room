@@ -315,3 +315,20 @@ describe('saturatedFraction', () => {
     expect(saturatedFraction(g, 10, 0, 5, 9, 9)).toBe(0);
   });
 });
+
+describe('exposure scaling only ever rescues a plate', () => {
+  it('keeps a textured beige cover on a dark wall in a normal frame', () => {
+    // A beige blanking plate (105) on a walnut wall (70). Its moulded texture
+    // sits 22 levels under the plate: not dark by the absolute rule (28), but
+    // dark by the exposure-scaled one (~20 at this brightness) — which used to
+    // count 30 "features" and throw the plate away as printed matter.
+    const img = makeImage(256, 192, 70);
+    rect(img, 111, 74, 34, 44, 105);
+    for (let y = 79; y < 113; y += 6) {
+      for (let x = 116; x < 141; x += 5) rect(img, x, y, 2, 2, 83);
+    }
+    const dets = detectSockets(img);
+    expect(dets).toHaveLength(1);
+    expect(dets[0].holes).toBe(0);
+  });
+});

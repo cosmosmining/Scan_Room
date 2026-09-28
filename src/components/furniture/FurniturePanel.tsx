@@ -173,20 +173,26 @@ function Placed() {
             </button>
             {isSelected && (
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-                <button
-                  type="button"
-                  onClick={() => rotateItem(placed.id, placed.rotationY + Math.PI / 2)}
-                  className="rounded border border-white/15 px-2 py-1 text-neutral-300"
-                >
-                  Rotate 90°
-                </button>
-                <button
-                  type="button"
-                  onClick={() => duplicate(placed.id)}
-                  className="rounded border border-white/15 px-2 py-1 text-neutral-300"
-                >
-                  Duplicate
-                </button>
+                {/* A column is structure: it can be removed if the scan was
+                    wrong, but not turned or copied like furniture. */}
+                {!placed.column && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => rotateItem(placed.id, placed.rotationY + Math.PI / 2)}
+                      className="rounded border border-white/15 px-2 py-1 text-neutral-300"
+                    >
+                      Rotate 90°
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => duplicate(placed.id)}
+                      className="rounded border border-white/15 px-2 py-1 text-neutral-300"
+                    >
+                      Duplicate
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={() => remove(placed.id)}

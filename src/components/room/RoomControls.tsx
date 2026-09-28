@@ -22,18 +22,32 @@ type Mode = 'none' | 'camera' | 'floorplan' | 'lidar';
 export function RoomControls() {
   const room = useConfiguratorStore((s) => s.room);
   const applyRoomGeometry = useConfiguratorStore((s) => s.applyRoomGeometry);
+  const setRoom = useConfiguratorStore((s) => s.setRoom);
+  const regenerateLayout = useConfiguratorStore((s) => s.regenerateLayout);
 
   const xs = room.footprint.map((p) => p.x);
   const zs = room.footprint.map((p) => p.z);
-  const [width, setWidth] = useState(Math.round(Math.max(...xs) - Math.min(...xs)));
-  const [depth, setDepth] = useState(Math.round(Math.max(...zs) - Math.min(...zs)));
+  const currentWidth = Math.round(Math.max(...xs) - Math.min(...xs));
+  const currentDepth = Math.round(Math.max(...zs) - Math.min(...zs));
+  const [width, setWidth] = useState(currentWidth);
+  const [depth, setDepth] = useState(currentDepth);
   const [height, setHeight] = useState(room.height);
   const [mode, setMode] = useState<Mode>('none');
 
-  const apply = () =>
+  const apply = () => {
+    // Only the height changed: change only the height. Replacing the room with
+    // a fresh width × depth box threw away a scanned room's real shape — and,
+    // with it, the furniture and columns measured inside that shape — for what
+    // was only ever meant to be a taller ceiling.
+    if (width === currentWidth && depth === currentDepth) {
+      setRoom({ ...room, height, walls: room.walls.map((w) => ({ ...w, height })) });
+      regenerateLayout();
+      return;
+    }
     applyRoomGeometry(
       manualDimensionsToRoomGeometry({ width, depth, height, unitSystem: room.unitSystem }),
     );
+  };
 
   const fields = (compact: boolean) => (
     <div className={compact ? 'grid grid-cols-3 gap-2' : 'space-y-3'}>

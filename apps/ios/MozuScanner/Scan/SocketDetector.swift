@@ -290,15 +290,22 @@ enum SocketDetector {
             // screen either way.
             let insetX = max(1, Int((Double(bw) * 0.08).rounded()))
             let insetY = max(1, Int((Double(bh) * 0.08).rounded()))
-            let feats = darkFeatures(
-                g, w,
-                p.minx + insetX, p.miny + insetY,
-                p.maxx + 1 - insetX, p.maxy + 1 - insetY,
-                threshold: Float(plateMean - max(
-                    darkFeatureDeltaFloor,
-                    min(darkFeatureDelta, darkFeatureRel * plateMean)
-                ))
-            )
+            let ix0 = p.minx + insetX, iy0 = p.miny + insetY
+            let ix1 = p.maxx + 1 - insetX, iy1 = p.maxy + 1 - insetY
+            // The absolute rule first: it is what every normally exposed frame
+            // was tuned on. Only when it finds NOTHING does the exposure-scaled
+            // rule get a say — in a frame auto-exposure darkened for a light,
+            // the slots slip under the absolute delta — and only if what it
+            // finds is plausible for a faceplate. So it can rescue a plate and
+            // never reject one the absolute rule would have kept.
+            var feats = darkFeatures(g, w, ix0, iy0, ix1, iy1, threshold: Float(plateMean - darkFeatureDelta))
+            let scaledDelta = max(darkFeatureDeltaFloor, min(darkFeatureDelta, darkFeatureRel * plateMean))
+            if feats.blobs == 0 && scaledDelta < darkFeatureDelta {
+                let rescued = darkFeatures(g, w, ix0, iy0, ix1, iy1, threshold: Float(plateMean - scaledDelta))
+                if rescued.blobs > 0 && rescued.blobs <= maxFeatures && rescued.darkFraction <= maxDarkFraction {
+                    feats = rescued
+                }
+            }
             if feats.blobs > maxFeatures { continue }
             if feats.darkFraction > maxDarkFraction { continue }
             // Contrast judged as a difference OR a ratio, so a frame darkened by

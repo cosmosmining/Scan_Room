@@ -51,6 +51,16 @@ struct FloorplanResultView: View {
     }
 
     private var floorplan: Floorplan { Floorplan.build(from: scan) }
+
+    /// What a finger does in the current editing mode.
+    private var editHint: String {
+        switch editMode {
+        case .sockets: return "Tap a wall to add · drag a socket to move it"
+        case .openings: return "Tap a wall to add a \(newOpeningKind == .door ? "door" : "window") · drag one to slide it"
+        case .furniture: return "Tap a piece of furniture to select it, then remove it"
+        case .none: return ""
+        }
+    }
     private var socketCount: Int { scan.fixtures.count }
 
     var body: some View {
@@ -66,11 +76,7 @@ struct FloorplanResultView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(alignment: .topLeading) {
                 if editMode != .none {
-                    Text(editMode == .sockets
-                         ? "Tap a wall to add · drag a socket to move it"
-                         : editMode == .openings
-                         ? "Tap a wall to add a \(newOpeningKind == .door ? "door" : "window") · drag one to slide it"
-                         : "Tap a piece of furniture to select it, then remove it")
+                    Text(editHint)
                         .font(.caption2)
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(.thinMaterial, in: Capsule())
@@ -89,10 +95,7 @@ struct FloorplanResultView: View {
                     editMode = .openings
                     selectedOpening = scan.openings.firstIndex { $0.glass == true }
                 } label: {
-                    Label(
-                        "\(glassSuggestions) possible glass pane\(glassSuggestions == 1 ? "" : "s") found — review",
-                        systemImage: "rectangle.dashed"
-                    )
+                    Label(glassBanner, systemImage: "rectangle.dashed")
                     .font(.footnote)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -292,6 +295,10 @@ struct FloorplanResultView: View {
 
     private var glassSuggestions: Int { scan.openings.filter { $0.glass == true }.count }
 
+    private var glassBanner: String {
+        "\(glassSuggestions) possible glass pane\(glassSuggestions == 1 ? "" : "s") found — review"
+    }
+
     /// Common sizes for a hand-added opening; the inspector adjusts from there.
     private static func newOpening(_ kind: ScanOpening.Kind) -> (width: Double, height: Double, sill: Double) {
         switch kind {
@@ -404,9 +411,15 @@ struct FloorplanResultView: View {
                         scan.openings[i].width = min(max(v, 200), length)
                         scan.openings[i].offset = min(scan.openings[i].offset, max(0, length - scan.openings[i].width))
                     }
-                    lengthStepper("Height", value: op.height) { scan.openings[i].height = max($0, 200) }
+                    // Never taller than the room, and a window never pushed up
+                    // through the ceiling by its sill.
+                    lengthStepper("Height", value: op.height) {
+                        scan.openings[i].height = min(max($0, 200), scan.height - (scan.openings[i].sill ?? 0))
+                    }
                     if op.type == .window {
-                        lengthStepper("Sill", value: op.sill ?? 0) { scan.openings[i].sill = max($0, 0) }
+                        lengthStepper("Sill", value: op.sill ?? 0) {
+                            scan.openings[i].sill = min(max($0, 0), scan.height - scan.openings[i].height)
+                        }
                     }
                 }
                 HStack {
@@ -611,10 +624,11 @@ struct FloorplanResultView: View {
         } else {
             let furniture = scan.objects.filter { !$0.isColumn }.count
             let columns = scan.objects.count - furniture
+            let summary: String = columns > 0
+                ? "\(furniture) pieces of furniture, \(columns) column\(columns == 1 ? "" : "s") — tap one to remove it"
+                : "\(furniture) pieces of furniture detected — tap one to remove it"
             HStack {
-                Text(columns > 0
-                     ? "\(furniture) pieces of furniture, \(columns) column\(columns == 1 ? "" : "s") — tap one to remove it"
-                     : "\(furniture) pieces of furniture detected — tap one to remove it")
+                Text(summary)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()

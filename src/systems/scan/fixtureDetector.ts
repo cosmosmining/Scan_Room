@@ -82,14 +82,6 @@ const STRONG_CONTRAST = 12;
 /** Below STRONG_CONTRAST, this many features are required instead. */
 const WEAK_MIN_FEATURES = 2;
 /**
- * Blank SEALED covers — junction lids, blanking plates, sealed outlets — are
- * white blocks with no dark features at all, and they matter exactly like
- * sockets. They are accepted without features, but under stricter rules,
- * because a featureless bright rectangle is also what paper looks like: the
- * contrast must be unmistakable, the shape properly plate-like, and the size
- * within a real cover's range (paper and posters are bigger).
- */
-/**
  * Luminance at which a pixel is CLIPPED — the sensor has run out of range and
  * the true brightness is unknowable.
  */
@@ -119,8 +111,8 @@ export const MAX_SATURATED_FRACTION = 0.25;
 /**
  * …but a FEATURELESS clipped block gets almost no rope. With no pin slots,
  * rocker seam or screw heads, the only thing separating the candidate from a
- * lamp is that it does not clip — so a fifth of a blank candidate clipping is
- * already a light. A real sealed cover under an exposure set by the room does
+ * lamp is that it does not clip — so a fiftieth of a blank candidate clipping
+ * is already a light. A real sealed cover under an exposure set by the room does
  * not clip at all.
  */
 export const BLANK_MAX_SATURATED_FRACTION = 0.02;
@@ -143,6 +135,14 @@ export const MAX_REFLECTIVE_RATIO = 2.1;
  */
 export const MAX_MEASURED_CANDIDATES = 12;
 
+/**
+ * Blank SEALED covers — junction lids, blanking plates, sealed outlets — are
+ * white blocks with no dark features at all, and they matter exactly like
+ * sockets. They are accepted without features, but under stricter rules,
+ * because a featureless bright rectangle is also what paper looks like: the
+ * contrast must be unmistakable, the shape properly plate-like, and the size
+ * within a real cover's range (paper and posters are bigger).
+ */
 const BLANK_MIN_CONTRAST = 16;
 const BLANK_MIN_SOLIDITY = 0.78;
 const BLANK_MAX_SIDE_FRAC = 0.28;
@@ -337,7 +337,6 @@ function sweep(mask: Uint8Array, w: number, h: number, r: number, erodePass: boo
   return out;
 }
 
-/** Fraction of a bounding box that is set in the mask. */
 /**
  * Mean of the window around a candidate EXCLUDING the candidate's own box.
  *
@@ -385,6 +384,7 @@ export function saturatedFraction(
   return total > 0 ? clipped / total : 0;
 }
 
+/** Fraction of a bounding box that is set in the mask. */
 function maskFill(
   mask: Uint8Array, w: number, x0: number, y0: number, x1: number, y1: number,
 ): number {
@@ -592,15 +592,26 @@ export function detectSockets(img: DetectorImage, opts: DetectorOptions = {}): S
     // inside is a frame or a screen either way.
     const insetX = Math.max(1, Math.round(bw * 0.08));
     const insetY = Math.max(1, Math.round(bh * 0.08));
-    const feats = darkFeatures(
-      g, w,
-      p.minx + insetX, p.miny + insetY,
-      p.maxx + 1 - insetX, p.maxy + 1 - insetY,
-      plateMean - Math.max(
-        DARK_FEATURE_DELTA_FLOOR,
-        Math.min(DARK_FEATURE_DELTA, DARK_FEATURE_REL * plateMean),
-      ),
+    const ix0 = p.minx + insetX, iy0 = p.miny + insetY;
+    const ix1 = p.maxx + 1 - insetX, iy1 = p.maxy + 1 - insetY;
+    // The absolute rule first: it is what every normally exposed frame was
+    // tuned on. Only when it finds NOTHING does the exposure-scaled rule get a
+    // say — in a frame auto-exposure darkened for a light, the slots lose
+    // contrast with everything else and slip under the absolute delta — and
+    // only if what it finds is plausible for a faceplate. So it can rescue a
+    // plate, and never reject one the absolute rule would have kept: a dim
+    // beige plate's shading cannot become a reason to throw it away.
+    let feats = darkFeatures(g, w, ix0, iy0, ix1, iy1, plateMean - DARK_FEATURE_DELTA);
+    const scaledDelta = Math.max(
+      DARK_FEATURE_DELTA_FLOOR,
+      Math.min(DARK_FEATURE_DELTA, DARK_FEATURE_REL * plateMean),
     );
+    if (feats.blobs === 0 && scaledDelta < DARK_FEATURE_DELTA) {
+      const rescued = darkFeatures(g, w, ix0, iy0, ix1, iy1, plateMean - scaledDelta);
+      if (rescued.blobs > 0 && rescued.blobs <= MAX_FEATURES && rescued.darkFraction <= MAX_DARK_FRACTION) {
+        feats = rescued;
+      }
+    }
     if (feats.blobs > MAX_FEATURES) continue;
     if (feats.darkFraction > MAX_DARK_FRACTION) continue;
     // Contrast judged as a difference OR a ratio, so a frame darkened by a

@@ -49,7 +49,8 @@ export function DesignItems() {
           begin(placed.id);
         };
         return placed.column ? (
-          <ColumnMesh key={placed.id} placed={placed} selected={placed.id === selection} onGrab={onGrab} />
+          // Structure: selecting it is all a click does — no drag.
+          <ColumnMesh key={placed.id} placed={placed} selected={placed.id === selection} onGrab={() => select(placed.id)} />
         ) : (
           <FurnitureMesh
             key={placed.id}
@@ -80,7 +81,10 @@ function ColumnMesh({
   onGrab: () => void;
 }) {
   const wallFinish = useConfiguratorStore((s) => s.wallFinish);
-  const size = placedSize(placed);
+  // Floor to ceiling, always — the ceiling it meets is the room's, which can be
+  // changed after the scan measured it.
+  const ceiling = useConfiguratorStore((s) => s.room.height);
+  const size = { ...placedSize(placed), height: ceiling };
   // Cylinder and box UVs run 0…1 up the side, so one UV unit is the height.
   const material = useFinishMaterial(wallFinish, { uvUnitMm: size.height });
   const round = placed.column === 'round';

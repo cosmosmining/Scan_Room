@@ -101,6 +101,48 @@ function fixturePoint(wall: Wall, fixture: { offset: number }) {
   return { x: wall.start.x + ux * t, z: wall.start.z + uz * t, inward: { x: -uz, z: ux } };
 }
 
+/**
+ * A millimetre field you can actually type into. Committing — and clamping —
+ * on every keystroke turned the first "1" of "1500" into the 200mm minimum and
+ * appended the rest to that. The draft is kept while typing and applied on
+ * Enter or leaving the field, clamped to what the wall allows.
+ */
+function MmInput({
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (mm: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const mm = Number(draft);
+    setDraft(null);
+    if (draft.trim() === '' || !Number.isFinite(mm)) return;
+    onCommit(Math.round(Math.min(Math.max(mm, min), Math.max(min, max))));
+  };
+  return (
+    <input
+      type="number"
+      inputMode="numeric"
+      step={50}
+      value={draft ?? String(Math.round(value))}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        if (e.key === 'Escape') setDraft(null);
+      }}
+      className="w-20 rounded border border-white/15 bg-neutral-900 px-1.5 py-1 tabular-nums"
+    />
+  );
+}
+
 export function PlanEditor() {
   const room = useConfiguratorStore((s) => s.room);
   const setRoom = useConfiguratorStore((s) => s.setRoom);
@@ -129,7 +171,9 @@ export function PlanEditor() {
   const floorFinish = useConfiguratorStore((s) => s.floorFinish);
 
   const [selected, setSelected] = useState<{ wallId: string; index: number } | null>(null);
-  const [selectedOpening, setSelectedOpening] = useState<{ wallId: string; index: number } | null>(null);
+  // By id, not index: an index silently points at a different door once one
+  // before it is removed or the room is replaced.
+  const [selectedOpening, setSelectedOpening] = useState<{ wallId: string; id: string } | null>(null);
   const [tapAdds, setTapAdds] = useState<TapAdds>('socket');
   const [newHeight, setNewHeight] = useState(1100);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -197,24 +241,27 @@ export function PlanEditor() {
     [room, setRoom],
   );
 
-  /** Rewrite one opening, or remove it. */
+  /** Rewrite one opening, or remove it — always leaving it inside its wall. */
   const mutateOpening = useCallback(
-    (at: { wallId: string; index: number }, change: Partial<WallOpening> | null) => {
+    (at: { wallId: string; id: string }, change: Partial<WallOpening> | null) => {
       const walls = room.walls.map((w) =>
         w.id === at.wallId ? { ...w, openings: [...(w.openings ?? [])] } : w,
       );
       const wall = walls.find((w) => w.id === at.wallId);
-      const opening = wall?.openings?.[at.index];
-      if (!wall?.openings || !opening) return;
+      const index = wall?.openings?.findIndex((o) => o.id === at.id) ?? -1;
+      if (!wall?.openings || index < 0) return;
       if (change === null) {
-        wall.openings.splice(at.index, 1);
+        wall.openings.splice(index, 1);
         setSelectedOpening(null);
       } else {
         const length = Math.hypot(wall.end.x - wall.start.x, wall.end.z - wall.start.z);
-        const next = { ...opening, ...change };
+        const ceiling = wall.height || room.height;
+        const next = { ...wall.openings[index], ...change };
         next.width = Math.min(Math.max(next.width, 200), length);
         next.offset = Math.min(Math.max(next.offset, 0), Math.max(0, length - next.width));
-        wall.openings[at.index] = next;
+        next.height = Math.min(Math.max(next.height, 200), ceiling);
+        next.sillHeight = Math.min(Math.max(next.sillHeight, 0), ceiling - next.height);
+        wall.openings[index] = next;
       }
       setRoom({ ...room, walls });
     },
@@ -377,8 +424,16 @@ export function PlanEditor() {
       setSelectedOpening(null);
     }
     if (grab?.kind === 'opening') {
-      setSelectedOpening({ wallId: grab.wallId, index: grab.index });
+      const id = room.walls.find((w) => w.id === grab.wallId)?.openings?.[grab.index]?.id;
+      setSelectedOpening(id ? { wallId: grab.wallId, id } : null);
       setSelected(null);
+    }
+    // Picking a piece of furniture or a unit drops any socket or door that was
+    // selected: the inspector shows the first selection it finds, and a stale
+    // window inspector's Remove used to delete the window, not the sofa.
+    if (grab?.kind === 'furniture' || grab?.kind === 'module') {
+      setSelected(null);
+      setSelectedOpening(null);
     }
     // One selection at a time across both kinds of object, so the finish
     // editor's "Selected" is never ambiguous about what it will recolour.
@@ -435,6 +490,8 @@ export function PlanEditor() {
       }
 
       case 'furniture':
+        // A column is structure: selectable, removable, never carried about.
+        if (designItems.find((i) => i.id === grab.id)?.column) return;
         // Move by the drag's TRANSLATION, not to the pointer: grabbing a sofa
         // by its arm and having it jump so its centre is under your finger is
         // the difference between dragging a thing and re-placing it.
@@ -528,7 +585,7 @@ export function PlanEditor() {
       });
       setRoom({ ...room, walls });
       setSelected(null);
-      setSelectedOpening({ wallId: wall.id, index: wall.openings.length - 1 });
+      setSelectedOpening({ wallId: wall.id, id: wall.openings[wall.openings.length - 1].id });
       return;
     }
     const walls = room.walls.map((w) => ({ ...w, fixtures: [...(w.fixtures ?? [])] }));
@@ -548,8 +605,10 @@ export function PlanEditor() {
 
   const selectedFixture =
     selected && room.walls.find((w) => w.id === selected.wallId)?.fixtures?.[selected.index];
+  const selectedOpeningWall = selectedOpening && room.walls.find((w) => w.id === selectedOpening.wallId);
   const selectedOpeningData =
-    selectedOpening && room.walls.find((w) => w.id === selectedOpening.wallId)?.openings?.[selectedOpening.index];
+    selectedOpening && selectedOpeningWall?.openings?.find((o) => o.id === selectedOpening.id);
+  const openingCeiling = selectedOpeningWall?.height || room.height;
   const selectedItem = designItems.find((i) => i.id === designSelection);
   const selectedModule = instances.find((i) => i.id === selectedNodeId);
 
@@ -601,13 +660,15 @@ export function PlanEditor() {
         )}
         {selectedItem && !editWalls && (
           <>
-            <button
-              type="button"
-              onClick={() => duplicateFurniture(selectedItem.id)}
-              className="rounded-md border border-white/15 px-2.5 py-1.5 text-neutral-300"
-            >
-              Duplicate
-            </button>
+            {!selectedItem.column && (
+              <button
+                type="button"
+                onClick={() => duplicateFurniture(selectedItem.id)}
+                className="rounded-md border border-white/15 px-2.5 py-1.5 text-neutral-300"
+              >
+                Duplicate
+              </button>
+            )}
             <button
               type="button"
               onClick={() => removeFurniture(selectedItem.id)}
@@ -836,7 +897,7 @@ export function PlanEditor() {
             const o = Math.min(Math.max(op.offset, 0), Math.max(0, length - op.width));
             const ax = wall.start.x + ux * o, az = wall.start.z + uz * o;
             const bx = ax + ux * op.width, bz = az + uz * op.width;
-            const isSelected = selectedOpening?.wallId === wall.id && selectedOpening?.index === i;
+            const isSelected = selectedOpening?.wallId === wall.id && selectedOpening?.id === op.id;
             return (
               <g key={`${wall.id}_op${i}`} style={{ cursor: 'grab' }}>
                 {isSelected && (
@@ -954,27 +1015,41 @@ export function PlanEditor() {
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-300">
-              {([
-                ['Width', 'width'],
-                ['Height', 'height'],
-                ...(selectedOpeningData.type === 'window' ? [['Sill', 'sillHeight'] as const] : []),
-              ] as const).map(([label, key]) => (
-                <label key={key} className="flex items-center gap-1.5">
-                  {label}
-                  <input
-                    type="number"
-                    step={50}
+              <label className="flex items-center gap-1.5">
+                Width
+                <MmInput
+                  value={selectedOpeningData.width}
+                  min={200}
+                  max={Math.hypot(
+                    (selectedOpeningWall?.end.x ?? 0) - (selectedOpeningWall?.start.x ?? 0),
+                    (selectedOpeningWall?.end.z ?? 0) - (selectedOpeningWall?.start.z ?? 0),
+                  )}
+                  onCommit={(mm) => mutateOpening(selectedOpening, { width: mm })}
+                />
+                mm
+              </label>
+              <label className="flex items-center gap-1.5">
+                Height
+                <MmInput
+                  value={selectedOpeningData.height}
+                  min={200}
+                  max={openingCeiling - selectedOpeningData.sillHeight}
+                  onCommit={(mm) => mutateOpening(selectedOpening, { height: mm })}
+                />
+                mm
+              </label>
+              {selectedOpeningData.type === 'window' && (
+                <label className="flex items-center gap-1.5">
+                  Sill
+                  <MmInput
+                    value={selectedOpeningData.sillHeight}
                     min={0}
-                    value={Math.round(selectedOpeningData[key])}
-                    onChange={(e) => {
-                      const mm = Number(e.target.value);
-                      if (Number.isFinite(mm)) mutateOpening(selectedOpening, { [key]: mm });
-                    }}
-                    className="w-20 rounded border border-white/15 bg-neutral-900 px-1.5 py-1 tabular-nums"
+                    max={openingCeiling - selectedOpeningData.height}
+                    onCommit={(mm) => mutateOpening(selectedOpening, { sillHeight: mm })}
                   />
                   mm
                 </label>
-              ))}
+              )}
               <div className="ml-auto flex gap-1.5">
                 {selectedOpeningData.glass && (
                   <button
@@ -1045,8 +1120,12 @@ export function PlanEditor() {
           </div>
         ) : selectedItem ? (
           <p className="text-neutral-400">
-            {placedName(selectedItem)} · drag to move · drag the blue handle to turn it
-            {selectedItem.scanned ? ' · Delete removes it from the plan' : ''}
+            {selectedItem.column
+              ? 'Column · part of the structure, so it stays put · Delete if the scan got it wrong'
+              : <>
+                  {placedName(selectedItem)} · drag to move · drag the blue handle to turn it
+                  {selectedItem.scanned ? ' · Delete removes it from the plan' : ''}
+                </>}
           </p>
         ) : selectedModule ? (
           <p className="text-neutral-400">

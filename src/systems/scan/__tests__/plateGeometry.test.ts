@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   measurePlate,
   integrateSighting,
+  pinTrack,
   confirmedTracks,
   trackConfidence,
   trackKind,
   type DepthFrame,
+  type PlateGeometry,
   type PlateIntrinsics,
   type SocketTrack,
   type Vec3,
@@ -409,5 +411,75 @@ describe('a plane fit is only as good as the patch it agreed with', () => {
     expect(
       measurePlate(detection, { depth, width: DEPTH_W, height: DEPTH_H }, INTRINSICS, IMAGE, CAMERA),
     ).toBeNull();
+  });
+});
+
+describe('markers that hold still (field report: "跑來跑去")', () => {
+  const WALL_NORMAL: Vec3 = { x: 0, y: 0, z: 1 };
+  const look = (world: Vec3, rangeM: number): PlateGeometry => ({
+    world,
+    normal: WALL_NORMAL,
+    widthMm: 86,
+    heightMm: 86,
+    standoffMm: 5,
+    flatnessMm: 2,
+    rangeM,
+  });
+  const seen = { score: 0.8, holes: 2, platePx: 60 };
+  const at = (x: number): Vec3 => ({ x, y: 1.1, z: 0 });
+
+  it('lets a close look settle the position and a distant one only nudge it', () => {
+    const tracks: SocketTrack[] = [];
+    // Three close looks put it at x = 0…
+    for (const e of [-0.2, 0, 0.2]) integrateSighting(tracks, look(at(0), 0.6), seen, { x: e, y: 1.4, z: 0.6 });
+    // …then one look from across the room lands 8 cm off.
+    integrateSighting(tracks, look(at(0.08), 3.5), seen, { x: 0, y: 1.4, z: 3.5 });
+    expect(tracks).toHaveLength(1);
+    // An unweighted mean would have moved it 2 cm; the far look barely counts.
+    expect(Math.abs(tracks[0].world.x)).toBeLessThan(0.002);
+  });
+
+  it('gives a sighting between two sockets to the NEARER one', () => {
+    const tracks: SocketTrack[] = [];
+    integrateSighting(tracks, look(at(0), 0.8), seen, { x: 0, y: 1.4, z: 0.8 });
+    integrateSighting(tracks, look(at(0.15), 0.8), seen, { x: 0.15, y: 1.4, z: 0.8 });
+    expect(tracks).toHaveLength(2);
+    // 0.10 from the first (inside the merge radius), 0.05 from the second.
+    integrateSighting(tracks, look(at(0.1), 0.8), seen, { x: 0.1, y: 1.4, z: 0.8 });
+    expect(tracks[0].hits).toBe(1);
+    expect(tracks[1].hits).toBe(2);
+  });
+
+  it('never moves a socket the user pinned by hand', () => {
+    const tracks: SocketTrack[] = [];
+    const pinned = pinTrack(tracks, at(0.02), WALL_NORMAL);
+    for (let i = 0; i < 5; i++) integrateSighting(tracks, look(at(0.07), 1.0), seen, { x: i * 0.1, y: 1.4, z: 1 });
+    expect(tracks).toHaveLength(1);
+    expect(pinned.world.x).toBeCloseTo(0.02, 9);
+    expect(pinned.hits).toBe(6);
+    expect(confirmedTracks(tracks)).toEqual([pinned]);
+  });
+
+  it('keeps each marker’s number when an earlier-seen socket confirms late', () => {
+    const tracks: SocketTrack[] = [];
+    // A is glimpsed first but only once; B is walked past and confirms.
+    integrateSighting(tracks, look(at(0), 1), seen, { x: 0, y: 1.4, z: 1 });
+    for (const e of [0, 0.1, 0.2]) integrateSighting(tracks, look(at(0.6), 1), seen, { x: 0.6 + e, y: 1.4, z: 1 });
+    const b = tracks[1];
+    expect(b.number).toBe(1);
+    // Now A confirms. Numbered by list position, B would become "2".
+    for (const e of [0.1, 0.2]) integrateSighting(tracks, look(at(0), 1), seen, { x: e, y: 1.4, z: 1 });
+    expect(b.number).toBe(1);
+    expect(tracks[0].number).toBe(2);
+    expect(confirmedTracks(tracks).map((t) => t.number)).toEqual([1, 2]);
+  });
+
+  it('numbers a pinned socket straight away', () => {
+    const tracks: SocketTrack[] = [];
+    expect(pinTrack(tracks, at(0), WALL_NORMAL).number).toBe(1);
+    expect(pinTrack(tracks, at(0.5), WALL_NORMAL).number).toBe(2);
+    // Pinning onto an existing marker keeps its number.
+    expect(pinTrack(tracks, at(0.52), WALL_NORMAL).number).toBe(2);
+    expect(tracks).toHaveLength(2);
   });
 });

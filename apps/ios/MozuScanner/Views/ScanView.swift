@@ -246,38 +246,50 @@ private struct SocketMarkersOverlay: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            ForEach(markers(in: geo.size)) { m in
-                ZStack {
-                    // The point itself, on the socket. A pin the user placed is
-                    // drawn in a different colour, because "I put that there"
-                    // and "the app thinks that is there" are worth telling
-                    // apart at a glance.
-                    Circle()
-                        .fill(m.manual ? Color.green : Color.orange)
-                        .frame(width: 14, height: 14)
-                        .overlay(Circle().stroke(.white, lineWidth: 2.5))
-                        .position(m.point)
-                    // A short leader to a number, so the label never covers the
-                    // thing it labels — the same idiom RoomPlan uses for walls.
-                    Path { p in
-                        p.move(to: CGPoint(x: m.point.x, y: m.point.y - 9))
-                        p.addLine(to: CGPoint(x: m.point.x, y: max(12, m.point.y - 30)))
-                    }
-                    .stroke(m.manual ? Color.green : Color.orange, lineWidth: 2)
-                    Text("\(m.number)")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(.white)
-                        .frame(width: 22, height: 22)
-                        .background(m.manual ? Color.green : Color.orange, in: Circle())
-                        .overlay(Circle().stroke(.white, lineWidth: 1.5))
-                        .position(x: m.point.x, y: max(12, m.point.y - 41))
-                }
-                .shadow(radius: 3)
+        // Re-projected on EVERY display frame. The markers used to be placed
+        // only when the controller published — its 0.2 s timer — so while the
+        // camera moved at 60 fps each marker sat still and then jumped, five
+        // times a second: the "跑來跑去, 很不穩定" testers saw. Projecting a
+        // handful of points per frame costs nothing; it pauses when there is
+        // nothing to draw.
+        TimelineView(.animation(paused: controller.liveTracks.isEmpty)) { _ in
+            GeometryReader { geo in
+                markerLayer(markers(in: geo.size))
             }
         }
         .allowsHitTesting(false)
-        .animation(.easeOut(duration: 0.15), value: controller.liveTracks.count)
+    }
+
+    @ViewBuilder
+    private func markerLayer(_ markers: [Marker]) -> some View {
+        ForEach(markers) { m in
+            ZStack {
+                // The point itself, on the socket. A pin the user placed is
+                // drawn in a different colour, because "I put that there"
+                // and "the app thinks that is there" are worth telling
+                // apart at a glance.
+                Circle()
+                    .fill(m.manual ? Color.green : Color.orange)
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().stroke(.white, lineWidth: 2.5))
+                    .position(m.point)
+                // A short leader to a number, so the label never covers the
+                // thing it labels — the same idiom RoomPlan uses for walls.
+                Path { p in
+                    p.move(to: CGPoint(x: m.point.x, y: m.point.y - 9))
+                    p.addLine(to: CGPoint(x: m.point.x, y: max(12, m.point.y - 30)))
+                }
+                .stroke(m.manual ? Color.green : Color.orange, lineWidth: 2)
+                Text("\(m.number)")
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(.white)
+                    .frame(width: 22, height: 22)
+                    .background(m.manual ? Color.green : Color.orange, in: Circle())
+                    .overlay(Circle().stroke(.white, lineWidth: 1.5))
+                    .position(x: m.point.x, y: max(12, m.point.y - 41))
+            }
+            .shadow(radius: 3)
+        }
     }
 
     /// World positions → screen points, using ARKit's own projection.
@@ -295,7 +307,7 @@ private struct SocketMarkersOverlay: View {
         let bounds = CGRect(origin: .zero, size: size).insetBy(dx: -40, dy: -40)
 
         var out: [Marker] = []
-        for (i, track) in controller.liveTracks.enumerated() {
+        for track in controller.liveTracks {
             let world = SIMD3<Float>(
                 Float(track.world.x), Float(track.world.y), Float(track.world.z)
             )
@@ -307,7 +319,9 @@ private struct SocketMarkersOverlay: View {
                 world, orientation: orientation, viewportSize: size
             )
             guard screen.x.isFinite, screen.y.isFinite, bounds.contains(screen) else { continue }
-            out.append(Marker(id: track.id, point: screen, number: i + 1, manual: track.manual))
+            // The number fixed when it confirmed — never its list position,
+            // which shifted every time another socket confirmed.
+            out.append(Marker(id: track.id, point: screen, number: track.number, manual: track.manual))
         }
         return out
     }

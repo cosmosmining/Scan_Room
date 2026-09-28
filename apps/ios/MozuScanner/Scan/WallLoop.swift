@@ -101,6 +101,16 @@ enum WallLoop {
     static let pillarLinkMm = 350.0
     /// A wall ending within this of another wall's end meets it at a corner.
     static let cornerReachMm = 200.0
+    /// A wall turning off a gap may stop this short of the line (occlusion).
+    static let mouthReachMm = 1200.0
+    /// The two sides of a mouth are at least this far apart.
+    static let mouthMinWidthMm = 300.0
+    /// Shorter than this is noise, even as evidence of a mouth.
+    static let stubMm = 60.0
+    /// What connecting two walls without a corner between them costs the chain.
+    static let jogPenaltyMm = 500.0
+    /// How much of a wall occlusion may hide at a corner and still be a corner.
+    static let occludedCornerMm = 600.0
 
     // MARK: A wall reduced to a line
 
@@ -130,24 +140,37 @@ enum WallLoop {
     /// Clutter out by height, pillars out as structure, the outline from the rest.
     static func analyse(_ segments: [Segment]) -> Analysis {
         // 1 — CLUTTER BY HEIGHT. Only surfaces that report a height are judged.
-        let tall = segments.filter { s in
+        // Low is not enough on its own: an attic's knee wall is low and is still
+        // the room's edge. Clutter is low AND stands in front of a real wall —
+        // so a low surface is only dropped when a tall wall runs parallel right
+        // behind it.
+        func tallEnough(_ s: Segment) -> Bool {
             (s.heightMm.map { $0 >= minWallHeightMm } ?? true)
                 && (s.topMm.map { $0 >= minWallTopMm } ?? true)
         }
+        let tall = segments.filter(tallEnough)
+        func clutter(_ s: Segment) -> Bool {
+            !tallEnough(s) && standsInFront(s, of: tall)
+        }
         // If that leaves no room at all, the heights are what is wrong.
-        let walls = tall.count >= 3 ? tall : segments
+        let walls = tall.count >= 3 ? segments.filter { !clutter($0) } : segments
         let clutterRejected = segments.count - walls.count
 
         // 2 — PILLARS. A column's facets, woven into the outline, are what turned
-        // a round pillar into a spike across the plan. Pulled out first, then
-        // confirmed against the room.
-        let clusters = pillarClusters(walls)
+        // a round pillar into a spike across the plan. So they are pulled out
+        // first — but only after the clusters that are plainly part of the room
+        // (see `clusterIsBoundary`) have been put back. The outline the rest are
+        // judged against has to be the room's: built without one of its own
+        // corners it can stop short, and a real column then looks as if it
+        // stands outside the room.
+        let clusters = pillarClusters(walls).filter { !clusterIsBoundary($0, walls) }
         let inCluster = Set(clusters.flatMap { $0 })
         var outline = buildOutline(walls.indices.filter { !inCluster.contains($0) }.map { walls[$0] })
 
-        // A true pillar stands INSIDE the room it was taken out of. A cluster
-        // that does not — an alcove, a small bay, two short walls at a corner —
-        // was part of the boundary, so it goes back and the outline is rebuilt.
+        // A true pillar stands INSIDE the room it was taken out of, clear of its
+        // walls and not wedged into a corner. A cluster that does not — an
+        // alcove, a small bay, a rounded corner — was part of the boundary after
+        // all, so it goes back and the outline is rebuilt.
         var accepted: [[Int]] = []
         var rejected = Set<Int>()
         for idx in clusters {
@@ -161,7 +184,14 @@ enum WallLoop {
                 && outline.indices.allSatisfy {
                     Geo.distanceToSegment(c, outline[$0], outline[($0 + 1) % outline.count]) >= 50
                 }
-            if clear { accepted.append(idx) } else { rejected.formUnion(idx) }
+            // A column stands free or against ONE wall. Something reaching two
+            // walls that meet at a corner is the corner itself — a rounded
+            // corner, or a column built into it — and belongs in the boundary.
+            if clear && !touchesCorner(pts, outline) {
+                accepted.append(idx)
+            } else {
+                rejected.formUnion(idx)
+            }
         }
         if !rejected.isEmpty {
             outline = buildOutline(walls.indices
@@ -180,118 +210,352 @@ enum WallLoop {
 
     /// Returns the segments' own endpoints when there is nothing sensible to
     /// build, so a degenerate scan degrades to what RoomPlan said.
+    ///
+    /// TWO PASSES, because "keep the OUTERMOST fragment" needs to know which
+    /// side of each wall the room is on. The first pass guesses it from the
+    /// middle of the walls — exact for a convex room, but in an L-shaped room
+    /// that middle can fall OUTSIDE the room, and then the reflex wall's
+    /// "outermost" fragment is the one clutter pushed INTO the room: the shoes
+    /// bug again, in every non-convex room. So the first pass's outline is
+    /// asked instead, and the outline is rebuilt with its answers.
     private static func buildOutline(_ segments: [Segment]) -> [Vec2] {
         let usable = segments.filter { Geo.distance($0.a, $0.b) >= minSegmentMm }
         guard usable.count >= 3 else { return segments.flatMap { [$0.a, $0.b] } }
 
-        // The room's rough middle, used only to decide which way is "in".
+        // Pass 1 — which way is "in", judged from the room's rough middle.
         let mids = usable.map { Vec2(x: ($0.a.x + $0.b.x) / 2, z: ($0.a.z + $0.b.z) / 2) }
         let centre = Vec2(
             x: mids.reduce(0) { $0 + $1.x } / Double(mids.count),
             z: mids.reduce(0) { $0 + $1.z } / Double(mids.count)
         )
-
-        let lines: [Line] = usable.map { s in
-            let dir = Geo.normalize(Geo.sub(s.b, s.a))
-            var inward = Vec2(x: -dir.z, z: dir.x)
-            let mid = Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2)
-            if dot(inward, Geo.sub(centre, mid)) < 0 { inward = Vec2(x: -inward.x, z: -inward.z) }
-            let support = Geo.distance(s.a, s.b)
-            return Line(origin: s.a, dir: dir, inward: inward, t0: 0, t1: support, support: support)
+        let guessed: [Vec2] = usable.indices.map { i in
+            let dir = Geo.normalize(Geo.sub(usable[i].b, usable[i].a))
+            let left = Vec2(x: -dir.z, z: dir.x)
+            return dot(left, Geo.sub(centre, mids[i])) >= 0 ? left : Vec2(x: -left.x, z: -left.z)
         }
-
-        let walls = mergeCoplanar(lines)
-        guard walls.count >= 3 else { return usable.flatMap { [$0.a, $0.b] } }
-        guard let ordered = chain(walls), ordered.count >= 3 else {
+        guard let first = outlineFrom(usable, inwards: guessed, context: segments) else {
             return usable.flatMap { [$0.a, $0.b] }
         }
-        return corners(of: ordered)
+
+        // Pass 2 — which way is "in", asked of the room pass 1 found.
+        var changed = false
+        let asked: [Vec2] = usable.indices.map { i in
+            guard let side = roomSide(usable[i], mid: mids[i], room: first),
+                  dot(side, guessed[i]) <= 0 else { return guessed[i] }
+            changed = true
+            return side
+        }
+        guard changed else { return first }
+        return outlineFrom(usable, inwards: asked, context: segments) ?? first
+    }
+
+    /// The unit normal of `s` that points into `room`, or nil when it cannot be
+    /// told. Several distances, because the first outline can be off by a
+    /// fragment's width near the wall and a small room is narrow far from it.
+    private static func roomSide(_ s: Segment, mid: Vec2, room: [Vec2]) -> Vec2? {
+        let dir = Geo.normalize(Geo.sub(s.b, s.a))
+        let left = Vec2(x: -dir.z, z: dir.x)
+        for d in [250.0, 500, 1000] {
+            let l = inside(Vec2(x: mid.x + left.x * d, z: mid.z + left.z * d), room)
+            let r = inside(Vec2(x: mid.x - left.x * d, z: mid.z - left.z * d), room)
+            if l != r { return l ? left : Vec2(x: -left.x, z: -left.z) }
+        }
+        return nil
+    }
+
+    /// One pass: merge, chain, corner. Nil when no loop can be made.
+    private static func outlineFrom(_ usable: [Segment], inwards: [Vec2], context: [Segment]) -> [Vec2]? {
+        let lines: [Line] = usable.indices.map { i in
+            let s = usable[i]
+            let support = Geo.distance(s.a, s.b)
+            return Line(
+                origin: s.a, dir: Geo.normalize(Geo.sub(s.b, s.a)), inward: inwards[i],
+                t0: 0, t1: support, support: support
+            )
+        }
+        let walls = mergeCoplanar(lines, context: context)
+        guard walls.count >= 3, let ordered = chain(walls), ordered.count >= 3 else { return nil }
+        return corners(of: ordered, context: context)
+    }
+
+    /// A low surface this far or less in front of a wall is standing against it.
+    static let clutterReachMm = 1200.0
+
+    /// Does low surface `s` stand in front of a tall wall: one running parallel
+    /// within reach of it, whose extent covers most of it?
+    ///
+    /// The extent is the whole wall line — every tall piece on it AND the gaps
+    /// between them — because clutter hides exactly the stretch of wall behind
+    /// it: a shoe rack arrives with the wall behind it missing, and measured
+    /// against the pieces alone it covered nothing and survived as a "wall".
+    private static func standsInFront(_ s: Segment, of tall: [Segment]) -> Bool {
+        let sLen = Geo.distance(s.a, s.b)
+        guard sLen >= 1 else { return false }
+        let d = Geo.normalize(Geo.sub(s.b, s.a))
+        let cosLimit = cos(parallelDeg * .pi / 180)
+        let mid = Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2)
+        var lo = Double.infinity, hi = -Double.infinity
+        for t in tall {
+            guard Geo.distance(t.a, t.b) >= 1 else { continue }
+            let td = Geo.normalize(Geo.sub(t.b, t.a))
+            guard abs(dot(td, d)) >= cosLimit else { continue }
+            let across = abs(-td.z * (mid.x - t.a.x) + td.x * (mid.z - t.a.z))
+            guard across <= clutterReachMm else { continue }
+            // The tall piece's extent, measured along the low surface.
+            let ta = dot(Geo.sub(t.a, s.a), d), tb = dot(Geo.sub(t.b, s.a), d)
+            lo = min(lo, ta, tb)
+            hi = max(hi, ta, tb)
+        }
+        // …and on past its last visible piece, for the same reason: the stretch
+        // the clutter hides can be the wall's end.
+        let overlap = min(hi + maxJumpMm, sLen) - max(lo - maxJumpMm, 0)
+        return overlap >= 0.5 * sLen
+    }
+
+    /// Is this cluster of short pieces part of the room's BOUNDARY rather than
+    /// a column standing in it?
+    ///
+    /// Seen locally the two cannot be told apart — two wall pieces meeting at
+    /// an inside corner look exactly like two faces of a square column. What
+    /// differs is how they connect. A column's faces close into a ring, or leave
+    /// loose ends that touch nothing (it stands free) or one wall (it is built
+    /// into it). A corner of the room carries on into the rest of it: its loose
+    /// ends meet walls on two DIFFERENT lines. Taken for a column, such a corner
+    /// was cut out of the outline — the notch of a U-shaped room went with it,
+    /// and a column appeared where the notch should have been.
+    private static func clusterIsBoundary(_ idx: [Int], _ walls: [Segment]) -> Bool {
+        let cosLimit = cos(parallelDeg * .pi / 180)
+        let facets = idx.map { walls[$0] }
+        struct End { var k: Int; var p: Vec2; var q: Vec2 }
+        let ends = facets.enumerated().flatMap { k, f in
+            [End(k: k, p: f.a, q: f.b), End(k: k, p: f.b, q: f.a)]
+        }
+
+        // Pair up the ends that meet (closest first); the rest are loose.
+        var pairs: [(d: Double, i: Int, j: Int)] = []
+        for i in ends.indices {
+            for j in ends.indices where j > i && ends[i].k != ends[j].k {
+                pairs.append((Geo.distance(ends[i].p, ends[j].p), i, j))
+            }
+        }
+        // Stable on ties, as the TypeScript sort is.
+        pairs = pairs.enumerated()
+            .sorted { $0.element.d < $1.element.d || ($0.element.d == $1.element.d && $0.offset < $1.offset) }
+            .map(\.element)
+        var joined = Array(repeating: false, count: ends.count)
+        for pair in pairs {
+            if pair.d > pillarLinkMm { break }
+            if !joined[pair.i] && !joined[pair.j] { joined[pair.i] = true; joined[pair.j] = true }
+        }
+        let loose = ends.indices.filter { !joined[$0] }.map { ends[$0] }
+        // A closed ring — or one closed but for a small gap — is a column.
+        if loose.isEmpty { return false }
+        if loose.count == 2 && Geo.distance(loose[0].p, loose[1].p) <= pillarLinkMm { return false }
+
+        let inCluster = Set(idx)
+        let others = walls.indices
+            .filter { !inCluster.contains($0) && Geo.distance(walls[$0].a, walls[$0].b) >= stubMm }
+            .map { walls[$0] }
+
+        /// The walls a loose end runs into: one ending near it; one its own
+        /// piece carries straight on into; or one its piece would meet at a
+        /// corner hidden behind clutter — carried on, it crosses that wall's
+        /// line close to where that wall stops.
+        func meets(_ end: End) -> [Segment] {
+            let out = Geo.normalize(Geo.sub(end.p, end.q))
+            return others.filter { s in
+                if min(Geo.distance(end.p, s.a), Geo.distance(end.p, s.b)) <= cornerReachMm { return true }
+                let d = Geo.normalize(Geo.sub(s.b, s.a))
+                let cross = out.x * d.z - out.z * d.x
+                if abs(cross) >= sin(minCornerDeg * .pi / 180) {
+                    let w = Geo.sub(s.a, end.p)
+                    let u = (w.x * d.z - w.z * d.x) / cross
+                    guard u >= -cornerReachMm, u <= maxJumpMm else { return false }
+                    let x = Vec2(x: end.p.x + out.x * u, z: end.p.z + out.z * u)
+                    return min(Geo.distance(x, s.a), Geo.distance(x, s.b)) <= occludedCornerMm
+                }
+                guard abs(dot(d, out)) >= cosLimit else { return false }
+                guard abs(dot(Geo.sub(s.a, end.p), Vec2(x: -out.z, z: out.x))) <= coplanarMm else { return false }
+                let ta = dot(Geo.sub(s.a, end.p), out), tb = dot(Geo.sub(s.b, end.p), out)
+                return min(ta, tb) >= -cornerReachMm && min(ta, tb) <= maxJumpMm
+            }
+        }
+        func sameLine(_ s: Segment, _ t: Segment) -> Bool {
+            let d = Geo.normalize(Geo.sub(s.b, s.a))
+            guard abs(dot(d, Geo.normalize(Geo.sub(t.b, t.a)))) >= cosLimit else { return false }
+            let mid = Vec2(x: (t.a.x + t.b.x) / 2, z: (t.a.z + t.b.z) / 2)
+            return abs(dot(Geo.sub(mid, s.a), Vec2(x: -d.z, z: d.x))) <= coplanarMm
+        }
+        let met = loose.map(meets)
+        for i in met.indices {
+            for j in met.indices where j > i {
+                if met[i].contains(where: { s in met[j].contains { t in !sameLine(s, t) } }) { return true }
+            }
+        }
+        return false
+    }
+
+    /// A pillar within this of a wall is touching it.
+    static let touchMm = 100.0
+
+    /// Do these points touch two outline edges that are not parallel?
+    private static func touchesCorner(_ pts: [Vec2], _ outline: [Vec2]) -> Bool {
+        let cosLimit = cos(parallelDeg * .pi / 180)
+        var touched: [Vec2] = []
+        for k in outline.indices {
+            let a = outline[k], b = outline[(k + 1) % outline.count]
+            guard Geo.distance(a, b) >= 1 else { continue }
+            if pts.contains(where: { Geo.distanceToSegment($0, a, b) <= touchMm }) {
+                touched.append(Geo.normalize(Geo.sub(b, a)))
+            }
+        }
+        for i in touched.indices {
+            for j in touched.indices where j > i {
+                if abs(dot(touched[i], touched[j])) < cosLimit { return true }
+            }
+        }
+        return false
     }
 
     /// Merge the fragments of one wall, taking the OUTERMOST offset — see the
     /// note above. Two collinear fragments are only bridged across an EMPTY gap
-    /// (occlusion, a doorway). If other walls turn off the line at both ends of
-    /// the gap, it is the mouth of an alcove or a chimney breast, and bridging
-    /// it would delete real architecture from the plan.
-    private static func mergeCoplanar(_ lines: [Line]) -> [Line] {
+    /// (occlusion, a doorway). If walls turn off the line within the gap, it is
+    /// the mouth of an alcove, a chimney breast or the notch of a U-shaped
+    /// room, and bridging it would delete real architecture from the plan.
+    private static func mergeCoplanar(_ lines: [Line], context: [Segment]) -> [Line] {
         let cosLimit = cos(parallelDeg * .pi / 180)
 
-        func turnsOff(at p: Vec2, from dir: Vec2) -> Bool {
-            lines.contains { l in
-                abs(dot(l.dir, dir)) < cosLimit
-                    && (Geo.distance(p, l.start) <= cornerReachMm || Geo.distance(p, l.end) <= cornerReachMm)
+        /// Is the gap [lo, hi] along `host` the MOUTH of something — an alcove,
+        /// a chimney breast, the notch of a U-shaped room — rather than an empty
+        /// stretch hidden behind clutter? It is when two different full-height
+        /// walls turn off the host's line inside it.
+        ///
+        /// Measured to survive occlusion, which is what a gap is made of: a wall
+        /// counts when its LINE crosses the host line within the gap and it comes
+        /// within reach, not only when its endpoint touches — the last piece of a
+        /// notch wall is often a stub too short to be a wall, or missing. Stubs
+        /// count here for the same reason; low surfaces do not; and the two
+        /// crossings must be apart, so one wall in two pieces is one.
+        func isMouth(_ host: Line, _ lo: Double, _ hi: Double) -> Bool {
+            var crossings: [Double] = []
+            for s in context {
+                guard Geo.distance(s.a, s.b) >= stubMm else { continue }
+                if let h = s.heightMm, h < minWallHeightMm { continue }
+                if let top = s.topMm, top < minWallTopMm { continue }
+                let d = Geo.normalize(Geo.sub(s.b, s.a))
+                let cross = host.dir.x * d.z - host.dir.z * d.x
+                guard abs(cross) >= sin(minCornerDeg * .pi / 180) else { continue }
+                let near = min(
+                    abs(dot(Geo.sub(s.a, host.origin), host.inward)),
+                    abs(dot(Geo.sub(s.b, host.origin), host.inward))
+                )
+                guard near <= mouthReachMm else { continue }
+                // Where the wall's line meets the host's line, along the host.
+                let w = Geo.sub(s.a, host.origin)
+                let t = (w.x * d.z - w.z * d.x) / cross
+                if t >= lo - cornerReachMm && t <= hi + cornerReachMm { crossings.append(t) }
             }
+            guard crossings.count >= 2, let first = crossings.min(), let last = crossings.max() else { return false }
+            return last - first >= mouthMinWidthMm
         }
 
         var merged: [Line] = []
         for line in lines {
-            var joined = false
-            for i in merged.indices {
-                let host = merged[i]
+            // Of the walls this fragment could belong to, the one it is closest
+            // to along its length — so the result does not depend on the order
+            // RoomPlan happened to list the fragments in.
+            var bestHost = -1
+            var bestGap = Double.infinity
+            for (i, host) in merged.enumerated() {
                 if abs(dot(host.dir, line.dir)) < cosLimit { continue }
                 let offset = dot(Geo.sub(line.origin, host.origin), host.inward)
                 if abs(offset) > coplanarMm { continue }
 
-                // Where is the gap between them, if there is one?
                 let ta = dot(Geo.sub(line.start, host.origin), host.dir)
                 let tb = dot(Geo.sub(line.end, host.origin), host.dir)
-                var gap: (Vec2, Vec2)?
-                if min(ta, tb) > host.t1 {
-                    gap = (host.end, ta < tb ? line.start : line.end)
-                } else if max(ta, tb) < host.t0 {
-                    gap = (host.start, ta > tb ? line.start : line.end)
+                let lineLo = min(ta, tb), lineHi = max(ta, tb)
+                // The empty stretch between them along the host, if any.
+                let gapLo = lineLo > host.t1 ? host.t1 : lineHi < host.t0 ? lineHi : 0
+                let gapHi = lineLo > host.t1 ? lineLo : lineHi < host.t0 ? host.t0 : 0
+                let gap = gapHi - gapLo
+                if gap > 0 && isMouth(host, gapLo, gapHi) { continue }
+                if gap < bestGap {
+                    bestGap = gap
+                    bestHost = i
                 }
-                if let g = gap, turnsOff(at: g.0, from: host.dir), turnsOff(at: g.1, from: host.dir) {
-                    continue
-                }
-
-                // Same wall. Keep whichever is further OUT: a negative inward
-                // offset is further from the room centre, which occlusion
-                // cannot manufacture.
-                let origin = offset < 0
-                    ? Vec2(x: host.origin.x + host.inward.x * offset,
-                           z: host.origin.z + host.inward.z * offset)
-                    : host.origin
-                let dir = host.dir
-                let ts = [host.start, host.end, line.start, line.end]
-                    .map { dot(Geo.sub($0, origin), dir) }
-                merged[i] = Line(
-                    origin: origin, dir: dir, inward: host.inward,
-                    t0: ts.min() ?? 0, t1: ts.max() ?? 0,
-                    support: host.support + line.support
-                )
-                joined = true
-                break
             }
-            if !joined { merged.append(line) }
+
+            guard bestHost >= 0 else {
+                merged.append(line)
+                continue
+            }
+
+            // Same wall. Keep whichever is further OUT: a negative inward offset
+            // is further from the room, which occlusion cannot manufacture.
+            let host = merged[bestHost]
+            let offset = dot(Geo.sub(line.origin, host.origin), host.inward)
+            let origin = offset < 0
+                ? Vec2(x: host.origin.x + host.inward.x * offset,
+                       z: host.origin.z + host.inward.z * offset)
+                : host.origin
+            let dir = host.dir
+            let ts = [host.start, host.end, line.start, line.end].map { dot(Geo.sub($0, origin), dir) }
+            merged[bestHost] = Line(
+                origin: origin, dir: dir, inward: host.inward,
+                t0: ts.min() ?? 0, t1: ts.max() ?? 0,
+                support: host.support + line.support
+            )
         }
         return merged
     }
 
     private static func chain(_ walls: [Line]) -> [Line]? {
-        var remaining = walls.sorted { $0.support > $1.support }
+        // Ties (a rectangle's opposite walls) break by list order, and support
+        // is compared to the micron so this starts from the same wall as the
+        // TypeScript twin, whose arithmetic differs in the last bits.
+        let key = { (w: Line) -> Double in (w.support * 1000).rounded() }
+        var remaining = walls.indices
+            .sorted { key(walls[$0]) > key(walls[$1]) || (key(walls[$0]) == key(walls[$1]) && $0 < $1) }
+            .map { walls[$0] }
         guard !remaining.isEmpty else { return nil }
         var ordered: [Line] = [remaining.removeFirst()]
 
         while !remaining.isEmpty {
-            let tail = ordered[ordered.count - 1].end
+            let current = ordered[ordered.count - 1]
+            let tail = current.end
+            // The next wall is the one reached by the shortest path THROUGH THE
+            // CORNER the two would form — where their lines meet — not simply
+            // the nearest loose end. When clutter hides the end of a wall, the
+            // nearest end can belong to a wall running parallel to it across a
+            // notch; two parallel walls cannot meet at a corner, so such a wall
+            // only wins when nothing forms a corner at all.
             var best = -1
             var bestFlip = false
-            var bestDist = Double.greatestFiniteMagnitude
+            var bestCost = Double.greatestFiniteMagnitude
             for (i, candidate) in remaining.enumerated() {
-                let dp = Geo.distance(tail, candidate.start)
-                let dq = Geo.distance(tail, candidate.end)
-                if dp < bestDist { bestDist = dp; best = i; bestFlip = false }
-                if dq < bestDist { bestDist = dq; best = i; bestFlip = true }
+                let p = candidate.start, q = candidate.end
+                var cost = min(Geo.distance(tail, p), Geo.distance(tail, q)) + jogPenaltyMm
+                var flip = Geo.distance(tail, q) < Geo.distance(tail, p)
+                if let corner = intersect(current, candidate),
+                   dot(Geo.sub(corner, tail), current.dir) >= -cornerReachMm {
+                    let viaCorner = Geo.distance(tail, corner)
+                        + min(Geo.distance(corner, p), Geo.distance(corner, q))
+                    if viaCorner < cost {
+                        cost = viaCorner
+                        flip = Geo.distance(corner, q) < Geo.distance(corner, p)
+                    }
+                }
+                if cost < bestCost { bestCost = cost; best = i; bestFlip = flip }
             }
             guard best >= 0 else { break }
 
             // A gap wider than a doorway is not a corner — unless the two wall
             // lines genuinely cross nearby, which is what an occluded corner
             // looks like.
+            let candidate = remaining[best]
+            let bestDist = min(Geo.distance(tail, candidate.start), Geo.distance(tail, candidate.end))
             if bestDist > maxJumpMm {
-                let candidate = remaining[best]
-                guard let meeting = intersect(ordered[ordered.count - 1], candidate),
+                guard let meeting = intersect(current, candidate),
                       Geo.distance(meeting, tail) <= maxJumpMm * 2,
                       min(Geo.distance(meeting, candidate.start),
                           Geo.distance(meeting, candidate.end)) <= maxJumpMm * 2
@@ -314,7 +578,7 @@ enum WallLoop {
     }
 
     /// A corner hidden behind a bin is still exactly where its two walls meet.
-    private static func corners(of ordered: [Line]) -> [Vec2] {
+    private static func corners(of ordered: [Line], context: [Segment]) -> [Vec2] {
         var out: [Vec2] = []
         for i in ordered.indices {
             let here = ordered[i]
@@ -322,14 +586,46 @@ enum WallLoop {
             if let corner = intersect(here, next),
                Geo.distance(corner, here.end) <= maxJumpMm * 3 {
                 out.append(corner)
-            } else {
-                // Near-parallel, or a corner implausibly far away: keep BOTH
-                // endpoints so the jog is visible, rather than fusing a chord.
-                out.append(here.end)
-                if Geo.distance(here.end, next.start) > 1 { out.append(next.start) }
+                continue
             }
+            // Two walls with no corner between them are a step, and a step has
+            // a return. A short return is often seen only as a stub too short to
+            // be a wall — but its LINE is known, and it gives the step both of
+            // its real corners instead of a diagonal.
+            if let step = returnBetween(here, next, context: context) {
+                out.append(contentsOf: step)
+                continue
+            }
+            // Nothing to go on: keep BOTH endpoints so the jog is visible and
+            // correctable, rather than fusing it into a chord.
+            out.append(here.end)
+            if Geo.distance(here.end, next.start) > 1 { out.append(next.start) }
         }
         return out
+    }
+
+    /// The two corners of a step between `here` and `next`, from a surface seen
+    /// between them that crosses both — the step's return — or nil.
+    private static func returnBetween(_ here: Line, _ next: Line, context: [Segment]) -> [Vec2]? {
+        let hereEnd = here.end, nextStart = next.start
+        var best: [Vec2]?
+        var bestD = Double.greatestFiniteMagnitude
+        for s in context {
+            let len = Geo.distance(s.a, s.b)
+            guard len >= stubMm else { continue }
+            let line = Line(origin: s.a, dir: Geo.normalize(Geo.sub(s.b, s.a)), inward: Vec2(x: 0, z: 0),
+                            t0: 0, t1: len, support: len)
+            guard let c1 = intersect(here, line), let c2 = intersect(line, next) else { continue }
+            // It must be part of THIS step: near both ends, and its corners too.
+            guard Geo.distance(c1, hereEnd) <= maxJumpMm, Geo.distance(c2, nextStart) <= maxJumpMm else { continue }
+            let mid = Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2)
+            let d = Geo.distance(mid, hereEnd) + Geo.distance(mid, nextStart)
+            if d <= 2 * maxJumpMm && d < bestD {
+                bestD = d
+                best = [c1, c2]
+            }
+        }
+        return best
     }
 
     private static func intersect(_ a: Line, _ b: Line) -> Vec2? {
@@ -389,7 +685,11 @@ enum WallLoop {
             let d = circle.radius * 2
             return Pillar(center: circle.center, shape: .round, width: d, depth: d, rotation: 0)
         }
-        let longest = facets.max { Geo.distance($0.a, $0.b) < Geo.distance($1.a, $1.b) }!
+        // Longest face, to the micron, first one on a tie — a square column's
+        // four faces tie, and the TypeScript twin picks the first.
+        let mm = { (f: Segment) -> Double in (Geo.distance(f.a, f.b) * 1000).rounded() }
+        var longest = facets[0]
+        for f in facets.dropFirst() where mm(f) > mm(longest) { longest = f }
         let dir = Geo.normalize(Geo.sub(longest.b, longest.a))
         let perp = Vec2(x: -dir.z, z: dir.x)
         let us = pts.map { dot($0, dir) }
