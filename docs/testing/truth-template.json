@@ -1,0 +1,30 @@
+{
+  "room": "Taipei-03 kitchen — tester initials, date",
+  "ciEnforce": false,
+  "walls": [
+    4210,
+    3405,
+    4205,
+    3410
+  ],
+  "areaM2": 14.33,
+  "ceilingMm": 2650,
+  "columns": [
+    {
+      "shape": "round",
+      "diameterMm": 450
+    }
+  ],
+  "openings": {
+    "door": 1,
+    "window": 2
+  },
+  "sockets": 6,
+  "_howTo": [
+    "walls: every wall length in mm, in order round the room from any corner, either direction. Measure at floor level with a laser meter, corner to corner, BEHIND furniture.",
+    "areaM2: optional; only when the room is simple enough to compute by hand.",
+    "columns: one entry per column; shape round|box; diameterMm = across (box: the wider face).",
+    "openings: counts per type. Count glass sliding doors as door, fixed panes as window.",
+    "sockets: power sockets only, every one in the room, including behind furniture you moved."
+  ]
+}

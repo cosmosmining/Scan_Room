@@ -1,0 +1,25 @@
+{
+  "schema": "mozu.roomscan/1",
+  "polygon": [
+    { "x": 0, "z": 0 }, { "x": 6000, "z": 0 }, { "x": 6000, "z": 2500 },
+    { "x": 3000, "z": 2500 }, { "x": 3000, "z": 5000 }, { "x": 0, "z": 5000 }
+  ],
+  "height": 2650,
+  "openings": [
+    { "type": "window", "wall": 0, "offset": 1500, "width": 1600, "height": 1200, "sill": 900 },
+    { "type": "door", "wall": 1, "offset": 500, "width": 1500, "height": 2200, "sill": 0, "glass": true },
+    { "type": "door", "wall": 4, "offset": 1000, "width": 900, "height": 2100, "sill": 0 }
+  ],
+  "objects": [
+    { "category": "column", "center": { "x": 1500, "z": 1500 }, "width": 450, "depth": 450, "rotation": 0, "height": 2650, "shape": "round" },
+    { "category": "sofa", "center": { "x": 4200, "z": 1300 }, "width": 2000, "depth": 850, "rotation": 0, "height": 800 }
+  ],
+  "fixtures": [
+    { "type": "socket", "wall": 0, "offset": 600, "height": 300, "source": "detected", "confidence": 0.9 },
+    { "type": "socket", "wall": 5, "offset": 2000, "height": 1100, "source": "manual", "confidence": 1 }
+  ],
+  "source": "roomplan",
+  "unitSystem": "metric",
+  "confidence": 0.92,
+  "capturedAt": "2026-10-01T00:00:00Z"
+}

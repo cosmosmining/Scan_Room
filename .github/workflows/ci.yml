@@ -1,0 +1,103 @@
+# MOZU CI — what every push must pass. The test plan (docs/TESTING-PLAN.md §4)
+# explains what each layer catches and why it is here.
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 18 * * *'   # nightly, 02:17 Taipei: the large fuzz run
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web — typecheck, unit, golden scans, build, e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+
+  swift-parity:
+    name: Swift ⇄ TypeScript parity (the iPad's geometry)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.0'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:parity
+
+  ios-build:
+    name: iPad app — full Xcode build (SwiftUI included)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+        working-directory: apps/ios
+      - name: Build for device, unsigned
+        working-directory: apps/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MozuScanner.xcodeproj \
+            -scheme MozuScanner \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log | grep -E 'error:|warning:|BUILD (SUCCEEDED|FAILED)'
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: apps/ios/build.log
+          retention-days: 14
+
+  nightly-fuzz:
+    name: Nightly — 45,000 badly scanned rooms
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        seed: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run wallLoop.fuzz
+        env:
+          FUZZ_ROOMS: '15000'
+          FUZZ_SEED: ${{ matrix.seed }}

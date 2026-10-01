@@ -1,0 +1,27 @@
+{
+  "walls": [
+    6000,
+    2500,
+    3000,
+    2500,
+    3000,
+    5000
+  ],
+  "areaM2": 22.5,
+  "ceilingMm": 2650,
+  "openings": [
+    "window@wall0+1500x1600",
+    "door@wall1+500x1500 (glass?)",
+    "door@wall4+1000x900"
+  ],
+  "columns": [
+    "round 450"
+  ],
+  "furniture": [
+    "sofa"
+  ],
+  "fixtures": [
+    "socket",
+    "socket"
+  ]
+}

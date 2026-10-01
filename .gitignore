@@ -30,3 +30,10 @@ yarn-error.log*
 
 # textures, synced from apps/ios by scripts/sync-textures.mjs (predev / prebuild)
 /public/textures/
+
+# local build caches (Swift parity harness)
+/.cache/
+
+# Playwright
+/test-results/
+/playwright-report/

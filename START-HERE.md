@@ -234,6 +234,8 @@ The same logic, in TypeScript, with tests you can run right now:
 npx vitest run src/systems/scan
 ```
 
+**The full testing plan and the 4-week roadmap:** [`docs/TESTING-PLAN.md`](docs/TESTING-PLAN.md) — field protocol, test cases, acceptance limits, and the automated layers (`npm run typecheck`, `npm test`, `npm run test:e2e`, `npm run test:parity`, `npm run scan:accuracy`).
+
 ### Field-test fixes — what to re-test on site
 
 Run `xcodegen generate` again first: the Debug build is now compiled with `-O`,

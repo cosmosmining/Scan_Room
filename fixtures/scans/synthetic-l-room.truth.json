@@ -1,0 +1,10 @@
+{
+  "room": "Synthetic L-shaped room (seed fixture — replace with field rooms)",
+  "ciEnforce": true,
+  "walls": [6000, 2500, 3000, 2500, 3000, 5000],
+  "areaM2": 22.5,
+  "ceilingMm": 2650,
+  "columns": [{ "shape": "round", "diameterMm": 450 }],
+  "openings": { "door": 2, "window": 1 },
+  "sockets": 2
+}

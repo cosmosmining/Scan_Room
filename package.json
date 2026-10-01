@@ -14,7 +14,13 @@
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
-    "cad:furniture": "node scripts/cad/build-furniture.mjs"
+    "cad:furniture": "node scripts/cad/build-furniture.mjs",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p packages/scan-sdk",
+    "test:fuzz": "FUZZ_ROOMS=15000 vitest run wallLoop.fuzz",
+    "test:parity": "bash scripts/swift-parity.sh && SWIFT_PARITY_BIN=.cache/swift-parity/parity vitest run swiftParity",
+    "test:golden:update": "UPDATE_GOLDEN=1 vitest run goldenScans",
+    "test:e2e": "playwright test",
+    "scan:accuracy": "node scripts/scan-accuracy.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.0.0",
@@ -27,6 +33,7 @@
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.4.0",
+    "@playwright/test": "1.56.1",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
