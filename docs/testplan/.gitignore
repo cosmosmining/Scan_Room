@@ -1,0 +1,9 @@
+# LaTeX build by-products (the .tex and the compiled .pdf are kept)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+build*.log

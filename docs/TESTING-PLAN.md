@@ -2,6 +2,7 @@
 
 **Scope:** the iPad scanner (`apps/ios`), the web configurator (`src/`), the scan SDK (`packages/scan-sdk`) and the six-character handoff between them.
 **Period:** Monday 5 Oct – Friday 30 Oct 2026.
+**Formal version:** [`docs/testplan/mozu-test-plan.pdf`](testplan/mozu-test-plan.pdf) (LaTeX source alongside). It is the same plan written as a paper, with the work divided between Johnson (scanning), Avery (backend) and Alvin (front end), a responsibility matrix, a Gantt schedule and the full test-case catalogue by owner.
 **Goal by 30 Oct:** a TestFlight build that a person who has never seen MOZU can use to scan a real home. The floor plan must be within the accuracy bar (§3), the sockets right, and the room must open on the web from a code. Every claim in this plan is backed either by a test that runs in CI or by a measured field result.
 
 ---
