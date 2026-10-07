@@ -90,6 +90,19 @@ final class RoomCaptureController: ObservableObject {
     /// False when the AR session provides no scene depth, so sockets are being
     /// found by the weaker image-only fallback.
     @Published private(set) var depthAvailable = true
+    /// Glass found so far in the room being scanned — RoomPlan's own windows
+    /// plus the panes the depth readings saw through — refreshed every couple
+    /// of seconds, so you know the glass was seen before you walk away from it.
+    @Published private(set) var glassFound = 0
+    /// Columns found so far, the same way.
+    @Published private(set) var pillarsFound = 0
+    /// RoomPlan's latest idea of the room, for the live glass and column count.
+    private var latestRoom: CapturedRoom?
+    private var previewRunning = false
+    private var lastPreview: TimeInterval = 0
+    /// Bumped per room, so a count worked out for the last room is not shown
+    /// for this one.
+    private var previewGeneration = 0
 
     init() {
         delegateBox = SessionDelegate(controller: self)
@@ -161,10 +174,16 @@ final class RoomCaptureController: ObservableObject {
         fixtureCandidates = 0
         liveTracks = []
         socketsOnFacingWall = 0
+        resetPreview()
         fixtureTimer?.invalidate()
         fixtureTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let frame = self.captureView?.captureSession.arSession.currentFrame else { return }
+                // Depth for the glass and column finders is banked on every
+                // tick: it is a few hundred reads, and the more looks at a pane
+                // the surer the answer.
+                self.fixtureCapture.bankDepth(frame: frame)
+                self.refreshPreview(now: frame.timestamp)
                 // Detection stands down while the user is pointing, so the scan
                 // gets the CPU it needs to stay smooth.
                 if self.stage != .marking { self.fixtureCapture.consider(frame: frame) }
@@ -205,6 +224,43 @@ final class RoomCaptureController: ObservableObject {
             guard simd_length(toTrack) > 1e-6 else { return true }
             return simd_dot(simd_normalize(toTrack), forward) > 0.3
         }.count
+    }
+
+    // MARK: Live glass and column count
+
+    /// Re-run the glass and column finders on the room so far, off the main
+    /// thread, every couple of seconds.
+    private func refreshPreview(now: TimeInterval) {
+        guard !previewRunning, now - lastPreview >= 2, let room = latestRoom,
+              let input = FloorplanBuilder.previewInput(from: room) else { return }
+        lastPreview = now
+        previewRunning = true
+        let samples = fixtureCapture.rays
+        let generation = previewGeneration
+        Task.detached(priority: .utility) { [weak self] in
+            let result = FloorplanBuilder.preview(input, samples: samples)
+            await self?.applyPreview(result, generation: generation)
+        }
+    }
+
+    private func applyPreview(_ result: FloorplanBuilder.Preview, generation: Int) {
+        previewRunning = false
+        guard generation == previewGeneration, phase == .scanning else { return }
+        glassFound = result.glass
+        pillarsFound = result.pillars
+    }
+
+    private func resetPreview() {
+        previewGeneration += 1
+        latestRoom = nil
+        lastPreview = 0
+        glassFound = 0
+        pillarsFound = 0
+    }
+
+    fileprivate func roomUpdated(_ room: CapturedRoom) {
+        guard phase == .scanning else { return }
+        latestRoom = room
     }
 
     private func stopFixtureSampling() {
@@ -322,6 +378,7 @@ final class RoomCaptureController: ObservableObject {
         fixtureFramesAnalysed = 0
         fixtureCandidates = 0
         liveTracks = []
+        resetPreview()
         captureView?.captureSession.arSession.pause()   // no-op if never created
         savedScans = []
         phase = .idle
@@ -358,6 +415,11 @@ final class RoomCaptureController: ObservableObject {
     private final class SessionDelegate: NSObject, RoomCaptureSessionDelegate {
         weak var controller: RoomCaptureController?
         init(controller: RoomCaptureController) { self.controller = controller }
+
+        /// RoomPlan's room so far, several times a second while scanning.
+        func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
+            Task { @MainActor in controller?.roomUpdated(room) }
+        }
 
         func captureSession(
             _ session: RoomCaptureSession,

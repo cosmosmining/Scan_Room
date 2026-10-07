@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { detectSockets, type DetectorImage } from '@/systems/scan';
 import { analyseWalls } from '@/systems/scan/wallLoop';
 import { findGlass, type DepthRay } from '@/systems/scan/glassFinder';
+import { findPillars, type Footprint } from '@/systems/scan/pillarFinder';
 import { mulberry32, room } from './helpers/roomGen';
+import { simulateScan, type SimRoom } from './helpers/sensorSim';
 
 // ---------------------------------------------------------------------------
 // The iPad and the web must draw the SAME floor plan from the same scan.
@@ -49,6 +51,36 @@ function glassCase(rnd: () => number) {
   return { rays, polygon: rnd() < 0.5 ? poly : [...poly].reverse(), ceilingMm: H, existing };
 }
 
+/**
+ * What the iPad banks on a walk — low-confidence and no-depth readings, and
+ * brightness, included — in daylight and at night, with glass, a column and
+ * furniture. Short walks, to keep the hand-over to Swift small.
+ */
+function simCases(rnd: () => number) {
+  const lerp = (a: number, b: number) => a + (b - a) * rnd();
+  return Array.from({ length: 16 }, (_, k) => {
+    const W = lerp(4500, 7000), D = lerp(4000, 5500), H = k % 5 === 0 ? 3600 : 2600;
+    const polygon = [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: D }, { x: 0, z: D }];
+    const t0 = lerp(400, W - 2600);
+    const sim: SimRoom = {
+      polygon,
+      ceiling: H,
+      patches: [
+        { wall: 0, t0, t1: t0 + lerp(800, 2200), y0: rnd() < 0.5 ? 0 : lerp(600, 1000), y1: H - lerp(200, 600), surface: 'glass' },
+        { wall: 2, t0: 1000, t1: 2600, y0: 0, y1: 1400, surface: 'sunlit' },
+      ],
+      pillars: [{ x: lerp(1800, W - 1800), z: lerp(1800, D - 1800), shape: k % 2 ? 'round' : 'box', width: lerp(300, 700) }],
+      furniture: [{ x0: 600, x1: 2000, z0: D - 900, z1: D, y0: 0, y1: 850 }],
+      balconyMm: k % 3 === 0 ? 1500 : null,
+    };
+    const rays = simulateScan(sim, {
+      daylight: k % 2 === 0, fill: (['wall', 'beyond', 'none'] as const)[k % 3], seed: 100 + k, laps: 1, stepMm: 500,
+    }).map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
+    const exclude: Footprint[] = k % 4 === 0 ? [{ center: { x: 1300, z: D - 450 }, width: 1400, depth: 900, rotation: 0 }] : [];
+    return { rays, polygon, ceilingMm: H, existing: [], exclude };
+  });
+}
+
 function images(): DetectorImage[] {
   const make = (bg: number): DetectorImage => {
     const data = new Uint8ClampedArray(256 * 192 * 4);
@@ -82,6 +114,7 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
   const rnd = mulberry32(Number(process.env.PARITY_SEED ?? 4242));
   const walls = Array.from({ length: ROOMS }, () => room(rnd).segments);
   const glass = Array.from({ length: 100 }, () => glassCase(rnd));
+  const sims = simCases(rnd);
   const imgs = images();
   const gray = imgs.map((img) => ({
     width: img.width,
@@ -90,8 +123,16 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
       0.299 * img.data[k * 4] + 0.587 * img.data[k * 4 + 1] + 0.114 * img.data[k * 4 + 2]),
   }));
   const out = BIN
-    ? JSON.parse(execFileSync(BIN, [], { input: JSON.stringify({ walls, glass, images: gray }), maxBuffer: 1 << 28 }).toString())
-    : { walls: [], glass: [], detections: [] };
+    ? JSON.parse(execFileSync(BIN, [], {
+      input: JSON.stringify({
+        walls,
+        glass: [...glass, ...sims.map(({ rays, polygon, ceilingMm, existing }) => ({ rays, polygon, ceilingMm, existing }))],
+        pillars: sims.map(({ rays, polygon, ceilingMm, exclude }) => ({ rays, polygon, ceilingMm, exclude })),
+        images: gray,
+      }),
+      maxBuffer: 1 << 28,
+    }).toString())
+    : { walls: [], glass: [], pillars: [], detections: [] };
 
   it(`on ${ROOMS} rooms: outline, pillars and clutter`, () => {
     const diffs: number[] = [];
@@ -107,7 +148,8 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
         ts.outline.every((p, k) => close(p.x, sw.outline[k].x) && close(p.z, sw.outline[k].z)) &&
         tp.length === sp.length &&
         tp.every((p, k) => p.shape === sp[k].shape && close(p.center.x, sp[k].center.x) &&
-          close(p.center.z, sp[k].center.z) && close(p.width, sp[k].width) && close(p.depth, sp[k].depth));
+          close(p.center.z, sp[k].center.z) && close(p.width, sp[k].width) && close(p.depth, sp[k].depth) &&
+          !!p.partial === sp[k].partial);
       if (!same) diffs.push(i);
     });
     expect(diffs, `rooms that differ: ${diffs.slice(0, 10).join(', ')}`).toEqual([]);
@@ -124,6 +166,38 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
         sw[k].glass === true);
       if (!same) diffs.push(i);
     });
+    expect(diffs).toEqual([]);
+  });
+
+  it('on 16 simulated walks: glass by day and night (confidence and brightness included)', () => {
+    const diffs: number[] = [];
+    let found = 0;
+    sims.forEach((g, i) => {
+      const ts = findGlass(g.rays as DepthRay[], g.polygon, g.ceilingMm, g.existing);
+      const sw = out.glass[glass.length + i];
+      found += ts.length;
+      const same = ts.length === sw.length && ts.every((o, k) =>
+        o.wall === sw[k].wall && o.type === sw[k].type && close(o.offset, sw[k].offset) &&
+        close(o.width, sw[k].width) && close(o.height, sw[k].height) && close(o.sill, sw[k].sill ?? 0));
+      if (!same) diffs.push(i);
+    });
+    expect(found, 'the walks find glass at all, so agreement means something').toBeGreaterThanOrEqual(12);
+    expect(diffs).toEqual([]);
+  });
+
+  it('on the same walks: columns from the depth readings', () => {
+    const diffs: number[] = [];
+    let found = 0;
+    sims.forEach((c, i) => {
+      const ts = findPillars(c.rays as DepthRay[], c.polygon, c.ceilingMm, c.exclude);
+      const sw = out.pillars[i];
+      found += ts.length;
+      const same = ts.length === sw.length && ts.every((p, k) =>
+        p.shape === sw[k].shape && close(p.center.x, sw[k].center.x) && close(p.center.z, sw[k].center.z) &&
+        close(p.width, sw[k].width) && close(p.depth, sw[k].depth) && close(p.rotation, sw[k].rotation));
+      if (!same) diffs.push(i);
+    });
+    expect(found, 'the walks find columns at all').toBeGreaterThanOrEqual(8);
     expect(diffs).toEqual([]);
   });
 

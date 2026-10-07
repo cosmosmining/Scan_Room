@@ -156,24 +156,52 @@ struct ScanView: View {
     /// roughly where; the plan says exactly where, once the room is closed.
     @ViewBuilder
     private var wallBanner: some View {
-        if controller.phase == .scanning, controller.socketsOnFacingWall > 0 {
-            let n = controller.socketsOnFacingWall
-            Label(
-                n == 1
-                    ? "Socket detected on this wall"
-                    : "\(n) sockets detected on this wall",
-                systemImage: "bolt.fill"
-            )
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(Color.orange.opacity(0.92), in: Capsule())
-            .shadow(radius: 6, y: 2)
+        if controller.phase == .scanning {
+            VStack(spacing: 8) {
+                if controller.socketsOnFacingWall > 0 {
+                    let n = controller.socketsOnFacingWall
+                    Label(
+                        n == 1
+                            ? "Socket detected on this wall"
+                            : "\(n) sockets detected on this wall",
+                        systemImage: "bolt.fill"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Color.orange.opacity(0.92), in: Capsule())
+                    .shadow(radius: 6, y: 2)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.easeOut(duration: 0.2), value: n)
+                }
+                if controller.glassFound > 0 || controller.pillarsFound > 0 {
+                    findingsChip
+                }
+            }
             .padding(.top, 64)
-            .transition(.move(edge: .top).combined(with: .opacity))
-            .animation(.easeOut(duration: 0.2), value: n)
         }
+    }
+
+    /// What RoomPlan's own overlay does not draw: the glass it saw through and
+    /// the columns standing in the room. Refreshed every couple of seconds, so
+    /// you know a pane has been seen before you walk away from it.
+    private var findingsChip: some View {
+        Label(findingsText, systemImage: "rectangle.dashed")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color.blue.opacity(0.85), in: Capsule())
+            .shadow(radius: 4, y: 2)
+    }
+
+    private var findingsText: String {
+        var parts: [String] = []
+        let glass = controller.glassFound, pillars = controller.pillarsFound
+        if glass > 0 { parts.append(glass == 1 ? "1 glass pane" : "\(glass) glass panes") }
+        if pillars > 0 { parts.append(pillars == 1 ? "1 column" : "\(pillars) columns") }
+        return parts.joined(separator: " \u{00B7} ") + " found"
     }
 
     private var hint: String {
@@ -185,6 +213,7 @@ struct ScanView: View {
                     + " \u{00B7} \(controller.fixturesFound) placed."
             }
             let base = "Walk slowly around the room, pointing at every wall, corner, door and window."
+                + " Hold each window and glass door in view for a couple of seconds, and point up at the top of any column."
             // Sockets are found from the same camera feed as you walk. Report
             // the frames looked at too, so "found none" is distinguishable from
             // "never looked" while you are still standing in the room.

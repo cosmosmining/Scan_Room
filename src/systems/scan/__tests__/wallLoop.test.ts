@@ -362,3 +362,74 @@ describe('clutter by height', () => {
     expect(analyseWalls(rect(4000, 3000)).clutterRejected).toBe(0);
   });
 });
+
+describe('a column RoomPlan only partly saw', () => {
+  const H = { heightMm: 2600, topMm: 2600 };
+  const tallRect = (w: number, d: number): LoopSegment[] => rect(w, d).map((s) => ({ ...s, ...H }));
+
+  it('takes ONE face of a freestanding column as a column, instead of drawing a spike out to it', () => {
+    // All RoomPlan saw of a column in the middle of an open-plan room: one
+    // flat face. Chained into the outline it ran (0,2500) → (3250,2500) → (0,0).
+    const { outline, pillars } = analyseWalls([
+      ...tallRect(6000, 5000),
+      { a: { x: 2750, z: 2500 }, b: { x: 3250, z: 2500 }, ...H },
+    ]);
+    expect(outline).toHaveLength(4);
+    expect(area(outline)).toBeCloseTo(30_000_000, -5);
+    expect(pillars).toHaveLength(1);
+    expect(pillars[0]).toMatchObject({ shape: 'box', partial: true });
+    expect(pillars[0].center).toEqual({ x: 3000, z: 2500 });
+  });
+
+  it('drops a lone LOW surface in the room (an island side) rather than spiking to it', () => {
+    const { outline, pillars, clutterRejected } = analyseWalls([
+      ...tallRect(6000, 5000),
+      { a: { x: 2000, z: 2500 }, b: { x: 3000, z: 2500 }, heightMm: 900, topMm: 900 },
+    ]);
+    expect(outline).toHaveLength(4);
+    expect(pillars).toHaveLength(0);
+    expect(clutterRejected).toBe(1);
+  });
+
+  it('leaves the short wall at the back of a U-shaped room’s notch in the walls', () => {
+    // Seen only as a fragment with gaps either side, it stands alone too —
+    // but its ends run on into the notch's two sides, so it is boundary.
+    const { outline, pillars } = analyseWalls([
+      { a: { x: 0, z: 0 }, b: { x: 6000, z: 0 }, ...H }, { a: { x: 6000, z: 0 }, b: { x: 6000, z: 5000 }, ...H },
+      { a: { x: 6000, z: 5000 }, b: { x: 4000, z: 5000 }, ...H }, { a: { x: 4000, z: 5000 }, b: { x: 4000, z: 3000 }, ...H },
+      { a: { x: 3450, z: 3000 }, b: { x: 2550, z: 3000 }, ...H },
+      { a: { x: 2000, z: 3000 }, b: { x: 2000, z: 5000 }, ...H }, { a: { x: 2000, z: 5000 }, b: { x: 0, z: 5000 }, ...H },
+      { a: { x: 0, z: 5000 }, b: { x: 0, z: 0 }, ...H },
+    ]);
+    expect(pillars).toHaveLength(0);
+    expect(outline).toHaveLength(8);
+    expect(area(outline)).toBeCloseTo(30_000_000 - 4_000_000, -5);
+  });
+
+  it('a quarter of a round column (iOS 17 curve, 15° steps) is round, centred where the column is', () => {
+    // Boxed round the visible arc, its centre sat on the near face.
+    const { pillars } = analyseWalls([...tallRect(6000, 5000), ...roundColumn(3000, 2500, 250, 6, Math.PI / 4, (3 * Math.PI) / 4)]);
+    expect(pillars).toHaveLength(1);
+    expect(pillars[0].shape).toBe('round');
+    expect(pillars[0].center.x).toBeCloseTo(3000, -1);
+    expect(pillars[0].center.z).toBeCloseTo(2500, -1);
+    expect(pillars[0].width).toBeCloseTo(500, -1);
+  });
+
+  it('…and so is a sixth of one', () => {
+    const { pillars } = analyseWalls([...tallRect(6000, 5000), ...roundColumn(3000, 2500, 250, 4, Math.PI / 3, (2 * Math.PI) / 3)]);
+    expect(pillars).toHaveLength(1);
+    expect(pillars[0].shape).toBe('round');
+    expect(pillars[0].center.z).toBeCloseTo(2500, -1);
+  });
+
+  it('two faces of a square column are still a box, not an arc', () => {
+    const { pillars } = analyseWalls([
+      ...tallRect(6000, 5000),
+      { a: { x: 2800, z: 2300 }, b: { x: 3200, z: 2300 }, ...H },
+      { a: { x: 3200, z: 2300 }, b: { x: 3200, z: 2700 }, ...H },
+    ]);
+    expect(pillars).toHaveLength(1);
+    expect(pillars[0].shape).toBe('box');
+  });
+});

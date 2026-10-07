@@ -67,6 +67,11 @@ export interface Pillar {
   depth: number;
   /** Yaw of the box's width axis, radians (0 for round). */
   rotation: number;
+  /**
+   * Only one face of it was seen, so where the rest of it stands is a guess.
+   * The depth readings (pillarFinder.ts) replace it when they found it.
+   */
+  partial?: boolean;
 }
 
 export interface WallAnalysis {
@@ -368,6 +373,31 @@ function headingSpread(segs: LoopSegment[]): number {
 }
 
 /**
+ * Do these facets bend round smoothly — an arc, not a corner? Three or more
+ * facets turning through at least 40° with no single turn wider than 30°.
+ *
+ * A column RoomPlan only saw part of arrives as a partial arc: a quarter of
+ * it, say, sampled every 15°. Judged by spread alone that is too narrow to be
+ * a column (a square's two face directions already span 90°), so it was boxed
+ * around the visible arc with its centre on the near face. A square has two
+ * face directions a right angle apart; an arc has many, close together.
+ */
+function smoothArc(segs: LoopSegment[]): boolean {
+  if (segs.length < 3 || headingSpread(segs) < (40 * Math.PI) / 180) return false;
+  const hs = segs
+    .map((s) => {
+      const h = Math.atan2(s.b.z - s.a.z, s.b.x - s.a.x);
+      return ((h % Math.PI) + Math.PI) % Math.PI;
+    })
+    .sort((a, b) => a - b);
+  const gaps = [Math.PI - hs[hs.length - 1] + hs[0]];
+  for (let i = 1; i < hs.length; i++) gaps.push(hs[i] - hs[i - 1]);
+  gaps.sort((a, b) => b - a);
+  // The widest gap is the part of the compass the arc does not cover.
+  return gaps[1] <= (30 * Math.PI) / 180;
+}
+
+/**
  * Least-squares circle through points (Kåsa): solve x² + z² + Dx + Ez + F = 0.
  * Points are centred first, which keeps the normal equations well conditioned
  * at room coordinates in millimetres.
@@ -415,7 +445,7 @@ function fitPillar(facets: LoopSegment[]): Pillar {
   if (
     circle &&
     facets.length >= 3 &&
-    headingSpread(facets) >= (100 * Math.PI) / 180 &&
+    (headingSpread(facets) >= (100 * Math.PI) / 180 || smoothArc(facets)) &&
     circle.rms <= circle.radius * 0.12
   ) {
     const d = circle.radius * 2;
@@ -473,7 +503,7 @@ function pillarClusters(segs: LoopSegment[], o: Required<WallLoopOptions>): numb
     const spanZ = Math.max(...pts.map((p) => p.z)) - Math.min(...pts.map((p) => p.z));
     if (Math.max(spanX, spanZ) > o.pillarMaxSpanMm) return false;
     // A straight run of short fragments is a wall, however short.
-    return headingSpread(facets) >= (60 * Math.PI) / 180;
+    return headingSpread(facets) >= (60 * Math.PI) / 180 || smoothArc(facets);
   });
 }
 
@@ -507,7 +537,13 @@ export function analyseWalls(segments: LoopSegment[], options: WallLoopOptions =
   // room's: built without one of its own corners it can stop short, and a real
   // column then looks as if it stands outside the room.
   const clusters = pillarClusters(walls, o).filter((idx) => !clusterIsBoundary(idx, walls, o));
-  const inCluster = new Set(clusters.flat());
+  const clustered = new Set(clusters.flat());
+  // …and single surfaces standing on their own: one face of a column (all
+  // RoomPlan saw of it), or the side of a kitchen island. Chained into the
+  // outline, a lone face in the middle of the room drew a spike out to it and
+  // back — the floor plan of an open-plan flat with a column in it.
+  const lone = loneSurfaces(walls, clustered, o);
+  const inCluster = new Set([...clustered, ...lone]);
   const rest = walls.filter((_, i) => !inCluster.has(i));
   let outline = buildOutline(rest, o);
 
@@ -534,6 +570,27 @@ export function analyseWalls(segments: LoopSegment[], options: WallLoopOptions =
     if (clearOfEdge && !touchesCorner(pts, outline, o)) accepted.push(idx);
     else rejected.push(...idx);
   }
+  // A lone surface is only off the boundary if it stands well clear of every
+  // wall: closer, it is a fragment of one. Clear of them, a surface reaching
+  // the ceiling is a column; anything lower (an island, a half-height
+  // partition) is in the room, not round it, and is dropped like clutter.
+  const ceiling = Math.max(0, ...walls.map((s) => s.topMm ?? 0));
+  const faces: number[] = [];
+  let interior = 0;
+  for (const i of lone) {
+    const s = walls[i];
+    const pts = [s.a, s.b, { x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 }];
+    const clear =
+      outline.length >= 3 &&
+      pts.every(
+        (p) =>
+          inside(p, outline) &&
+          outline.every((q, k) => distToSegment(p, q, outline[(k + 1) % outline.length]) >= LONE_CLEAR_MM),
+      );
+    if (!clear) rejected.push(i);
+    else if (s.topMm! >= ceiling - LONE_CEILING_GAP_MM && s.heightMm! >= 0.75 * ceiling) faces.push(i);
+    else interior++;
+  }
   if (rejected.length) {
     const back = new Set(rejected);
     outline = buildOutline(walls.filter((_, i) => !inCluster.has(i) || back.has(i)), o);
@@ -541,8 +598,54 @@ export function analyseWalls(segments: LoopSegment[], options: WallLoopOptions =
 
   return {
     outline,
-    pillars: accepted.map((idx) => fitPillar(idx.map((i) => walls[i]))),
-    clutterRejected,
+    pillars: [
+      ...accepted.map((idx) => fitPillar(idx.map((i) => walls[i]))),
+      ...faces.map((i) => facePillar(walls[i])),
+    ],
+    clutterRejected: clutterRejected + interior,
+  };
+}
+
+/** A lone surface stands at least this clear of every wall of the room… */
+const LONE_CLEAR_MM = 500;
+/** …is at least this wide (narrower is noise)… */
+const LONE_MIN_MM = 150;
+/** …and, to be a column, tops out within this of the ceiling. */
+const LONE_CEILING_GAP_MM = 300;
+
+/**
+ * Surfaces with nothing else near them: no other surface within linking
+ * distance, short enough to be a column face, carrying the heights that tell a
+ * column from an island, and not a piece of the boundary (its ends do not run
+ * on into walls on two different lines — see `clusterIsBoundary`).
+ */
+function loneSurfaces(walls: LoopSegment[], taken: Set<number>, o: Required<WallLoopOptions>): number[] {
+  const out: number[] = [];
+  walls.forEach((s, i) => {
+    if (taken.has(i) || s.heightMm === undefined || s.topMm === undefined) return;
+    const len = dist(s.a, s.b);
+    if (len < LONE_MIN_MM || len > o.pillarMaxFacetMm) return;
+    if (walls.some((t, j) => j !== i && segmentGap(s, t) <= o.pillarLinkMm)) return;
+    if (clusterIsBoundary([i], walls, o)) return;
+    out.push(i);
+  });
+  return out;
+}
+
+/**
+ * The one face RoomPlan saw of a column. Which side of it the column is on is
+ * not known from the face alone, so it is drawn as a square on the face —
+ * the depth readings (see pillarFinder.ts) place it properly when they saw it.
+ */
+function facePillar(s: LoopSegment): Pillar {
+  const len = dist(s.a, s.b);
+  return {
+    center: { x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 },
+    shape: 'box',
+    width: len,
+    depth: len,
+    rotation: Math.atan2(s.b.z - s.a.z, s.b.x - s.a.x),
+    partial: true,
   };
 }
 

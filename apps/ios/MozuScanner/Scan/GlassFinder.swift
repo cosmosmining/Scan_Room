@@ -1,28 +1,46 @@
-// Find the glass RoomPlan missed — from what the depth sensor saw THROUGH it.
+// Find the glass RoomPlan missed — from what the depth sensor saw THROUGH it,
+// and from what it could not see at all.
 //
 // WHY THIS EXISTS. RoomPlan finds a window by recognising a window. A sliding
 // glass door, a floor-to-ceiling pane or a frameless partition does not look
 // like one, so it comes back as plain wall and the plan says there is a wall
 // where there is a view. Testers hit this first ("有玻璃偵測不到").
 //
-// THE ONE PHYSICAL FACT USED. LiDAR does not stop at clear glass. A reading
-// taken through a pane lands on whatever is BEHIND it — the balcony rail, the
-// building opposite — so it arrives well beyond the wall the room says is
-// there. Solid wall can never do that: a reading on it lands ON it. So each
-// depth reading gathered during the walk is kept as a ray from the camera;
-// after the scan, every ray that leaves the room through a wall and ends
-// clearly beyond it is a vote that the wall is see-through where it crossed.
-// Readings that end ON the wall vote the other way. Patches where see-through
-// wins, over an area the size of a window, are the glass.
+// THREE KINDS OF EVIDENCE, because no single one survives every condition.
 //
-// WHAT IT CANNOT TELL APART. A mirror returns depth from the reflected room,
-// which also lands "behind" the wall — to a depth sensor a mirror IS a window
-// into a second room. So are a doorway RoomPlan missed and a deep alcove.
-// Everything found here is therefore marked `glass = true`, drawn dashed as a
-// suggestion, and removable with one tap.
+//   1. THROUGH. LiDAR does not stop at clear glass. A confident reading taken
+//      through a pane lands on whatever is BEHIND it, well beyond the wall.
+//      Solid wall can never do that. It needs something within the sensor's
+//      ~5 m reach behind the glass and a sensor that is not blinded — a
+//      balcony, at night. This was the only cue the first version used.
+//
+//   2. NO RETURN. In daylight the sun floods the LiDAR's 940 nm band, and from
+//      a high floor there is nothing within 5 m behind the glass at all. ARKit
+//      fills the hole with a guess (often painted at the depth of the wall
+//      around the pane) and marks it LOW confidence. The first version threw
+//      every low-confidence reading away, so in daylight a window produced no
+//      evidence whatsoever — the field bug. A painted wall within 4 m, looked
+//      at squarely, always returns a confident reading, so a low-confidence
+//      reading that reaches the wall IS evidence: of nothing there to measure.
+//
+//   3. LIGHT. In daylight a window is blown out in the camera. A see-through or
+//      no-return reading on a blown-out pixel, taken from close, counts twice.
+//      Brightness never creates evidence on its own: a sunlit patch of wall is
+//      blown out too, and from close the sensor still measures it.
+//
+// Readings that land ON the wall with confidence vote the other way. Patches
+// where the see-through evidence wins, seen densely enough, over an area the
+// size of a window, are the glass.
+//
+// WHAT IT CANNOT TELL APART. A mirror returns depth from the reflected room —
+// to a depth sensor a mirror IS a window into a second room. A television that
+// is on is bright and glossy. So are a doorway RoomPlan missed and a deep
+// alcove. Everything found here is therefore marked `glass = true`, drawn
+// dashed as a suggestion, and removable with one tap.
 //
 // Millimetres, y = height above the floor. Pure, and an exact mirror of
-// src/systems/scan/glassFinder.ts, which carries the tests.
+// src/systems/scan/glassFinder.ts, which carries the tests (including a
+// simulated daytime walk: __tests__/glassDaylight.test.ts).
 
 import Foundation
 
@@ -38,6 +56,11 @@ enum GlassFinder {
     struct Ray {
         var eye: Point3
         var hit: Point3
+        /// ARKit's confidence: 0 low, 1 medium, 2 high. A pixel with no depth
+        /// at all is 0, with `hit` far along its line of sight.
+        var confidence: Int = 2
+        /// Camera brightness at the reading, 0–255; negative means unknown.
+        var luma: Double = -1
     }
 
     struct Known {
@@ -56,8 +79,13 @@ enum GlassFinder {
     static let throughRatio = 2
     static let minSideMm = 400.0
     static let minFill = 0.6
-    static let minVotes = 12
+    static let minVotes = 24
+    static let minDensity = 1.0
     static let doorSillMm = 300.0
+    static let brightLuma = 235.0
+    static let brightRangeMm = 2500.0
+    static let voidRangeMm = 4000.0
+    static let voidMinCos = 0.4
 
     private final class Grid {
         let a: Vec2
@@ -115,32 +143,59 @@ enum GlassFinder {
 
         for ray in rays {
             let eye = ray.eye, hit = ray.hit
+            // Medium or high confidence measured something; low says only that
+            // nothing could be measured along this line of sight.
+            let measured = ray.confidence >= 1
+            let bright = ray.luma >= brightLuma
+            let dx = hit.x - eye.x, dy = hit.y - eye.y, dz = hit.z - eye.z
+            let length = (dx * dx + dy * dy + dz * dz).squareRoot()
+
+            // Where the ray first LEAVES the room through a wall, if it does —
+            // and, for a reading that measured nothing, where it first reaches one.
             var exit: (wall: Int, f: Double)?
+            var reach: (wall: Int, f: Double)?
             for (wi, w) in walls.enumerated() where w.length > 0 {
                 let sEye = (eye.x - w.a.x) * w.inward.x + (eye.z - w.a.z) * w.inward.z
                 let sHit = (hit.x - w.a.x) * w.inward.x + (hit.z - w.a.z) * w.inward.z
                 let tHit = (hit.x - w.a.x) * w.d.x + (hit.z - w.a.z) * w.d.z
 
                 // Landed ON this wall: a vote that it is solid there.
-                if abs(sHit) <= onWallMm, tHit >= 0, tHit <= w.length, hit.y >= 0, hit.y <= ceilingMm {
+                if measured, abs(sHit) <= onWallMm, tHit >= 0, tHit <= w.length, hit.y >= 0, hit.y <= ceilingMm {
                     w.solid[w.cell(tHit, hit.y)] += 1
                 }
 
-                guard sEye > 0, sHit < -beyondMm else { continue }
+                if measured {
+                    // Measured, and measured BEYOND the wall.
+                    guard sEye > 0, sHit < -beyondMm else { continue }
+                    let f = sEye / (sEye - sHit)
+                    let cx = eye.x + (hit.x - eye.x) * f
+                    let cz = eye.z + (hit.z - eye.z) * f
+                    let t = (cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z
+                    guard t >= endMarginMm, t <= w.length - endMarginMm else { continue }
+                    if exit == nil || f < exit!.f { exit = (wi, f) }
+                    continue
+                }
+
+                // Nothing measured. Where does its line of sight reach this wall?
+                guard sEye > 0, sHit <= onWallMm, sEye - sHit > 1e-6, length > 0 else { continue }
+                // Squarely enough: a wall seen edge-on returns nothing even when solid.
+                guard (sEye - sHit) / length >= voidMinCos else { continue }
                 let f = sEye / (sEye - sHit)
+                guard f * length <= voidRangeMm else { continue }
                 let cx = eye.x + (hit.x - eye.x) * f
                 let cz = eye.z + (hit.z - eye.z) * f
                 let t = (cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z
                 guard t >= endMarginMm, t <= w.length - endMarginMm else { continue }
-                if exit == nil || f < exit!.f { exit = (wi, f) }
+                if reach == nil || f < reach!.f { reach = (wi, f) }
             }
-            guard let exit else { continue }
-            let w = walls[exit.wall]
-            let y = eye.y + (hit.y - eye.y) * exit.f
+            guard let at = exit ?? reach else { continue }
+            let w = walls[at.wall]
+            let y = eye.y + (hit.y - eye.y) * at.f
             guard y >= 0, y <= ceilingMm else { continue }
-            let cx = eye.x + (hit.x - eye.x) * exit.f
-            let cz = eye.z + (hit.z - eye.z) * exit.f
-            w.through[w.cell((cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z, y)] += 1
+            let cx = eye.x + (hit.x - eye.x) * at.f
+            let cz = eye.z + (hit.z - eye.z) * at.f
+            let weight = bright && at.f * length <= brightRangeMm ? 2 : 1
+            w.through[w.cell((cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z, y)] += weight
         }
 
         var found: [(opening: ScanOpening, votes: Int)] = []
@@ -150,8 +205,9 @@ enum GlassFinder {
                 w.through[$0] >= minThrough && w.through[$0] >= throughRatio * w.solid[$0]
             }
 
-            // Patches: glass cells within two cells of each other belong
-            // together. Rays are sparse, so a pane is seen as a speckle.
+            // Patches: glass cells within two cells of each other along the
+            // wall, or three up it, belong together. Rays are sparse, so a pane
+            // is seen as a speckle — and the extra row bridges a transom.
             var label = Array(repeating: -1, count: cells)
             var next = 0
             for start in 0..<cells where glassy[start] && label[start] < 0 {
@@ -163,7 +219,7 @@ enum GlassFinder {
                     c0 = min(c0, c); c1 = max(c1, c)
                     r0 = min(r0, r); r1 = max(r1, r)
                     votes += w.through[i]
-                    for dr in -2...2 {
+                    for dr in -3...3 {
                         for dc in -2...2 {
                             let rr = r + dr, cc = c + dc
                             guard rr >= 0, cc >= 0, rr < w.rows, cc < w.cols else { continue }
@@ -191,7 +247,12 @@ enum GlassFinder {
                         if glassy[j] { clear += 1 }
                     }
                 }
-                guard seen > 0, Double(clear) / Double(seen) >= minFill else { continue }
+                // …and the see-through evidence must be dense where it was
+                // seen: glass gives it from every look, a solid wall that is
+                // merely hard to measure (sun on it, seen from far off) now and
+                // then.
+                guard seen > 0, Double(clear) / Double(seen) >= minFill,
+                      Double(votes) >= minDensity * Double(seen) else { continue }
 
                 let offset = Double(c0) * cellMm
                 let bottom = Double(r0) * cellMm

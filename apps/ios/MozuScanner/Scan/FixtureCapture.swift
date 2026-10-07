@@ -41,6 +41,19 @@ struct FixtureSighting {
     var imageHeight: Int
 }
 
+/// One depth reading banked for `GlassFinder` and `PillarFinder`, in ARKit
+/// world metres: where the camera was, where the reading landed, how sure ARKit
+/// was of it, and how bright the camera saw that spot.
+struct DepthSample {
+    var eye: SIMD3<Float>
+    var hit: SIMD3<Float>
+    /// ARKit's confidence: 0 low, 1 medium, 2 high. A pixel with no depth at all
+    /// is 0, with `hit` far along its line of sight.
+    var confidence: UInt8
+    /// Full-range luma at the reading, 0–255. A window in daylight is ~255.
+    var luma: UInt8
+}
+
 /// One socket, accumulated across the frames that saw it.
 struct SocketTrack: Identifiable, Equatable {
     var id: Int
@@ -179,18 +192,29 @@ final class FixtureCapture {
     /// Raw image sightings, banked ONLY while there is no scene depth to measure
     /// with, so such a session still has something to ray-cast at the end.
     private(set) var sightings: [FixtureSighting] = []
-    /// Depth readings banked for `GlassFinder`, world metres: where the camera
-    /// was and where each reading landed. Walls are not known until the scan
-    /// ends, so the rays are kept and judged against the finished walls then —
-    /// readings that went THROUGH a wall are how glass RoomPlan missed is found.
-    private(set) var rays: [(eye: SIMD3<Float>, hit: SIMD3<Float>)] = []
-    /// A sparse grid per analysed frame: glass only needs a speckle of readings
-    /// across it, and this is ~400 unprojections — nothing next to detection.
+    /// Depth readings banked for `GlassFinder` and `PillarFinder`. Walls are not
+    /// known until the scan ends, so the readings are kept and judged against
+    /// the finished walls then: readings that went THROUGH a wall, or found
+    /// nothing to measure where a wall should be, are how glass RoomPlan missed
+    /// is found; readings stacked floor to ceiling in the open are a column.
+    ///
+    /// EVERY reading is kept, low confidence included. The first version kept
+    /// only confident ones — and in daylight, through glass, there are none:
+    /// the sun blinds the LiDAR there, and ARKit marks its guess low
+    /// confidence. Dropping those is why glass went undetected in the daytime.
+    private(set) var rays: [DepthSample] = []
+    /// A sparse grid per frame: ~400 reads of three buffers, so it is taken on
+    /// every tick of the scan rather than only when detection runs.
     static let rayColumns = 24
     static let rayRows = 18
-    /// Past this the oldest half is thinned, keeping the whole walk represented
-    /// at lower density rather than only its end. ~1.4MB at the cap.
-    static let maxRays = 60_000
+    /// Gap between banked frames.
+    static let depthInterval: TimeInterval = 0.2
+    /// Where a pixel with no depth at all is put, along its line of sight.
+    static let noDepthM: Float = 8
+    /// Past this the whole set is thinned by half, keeping the whole walk
+    /// represented at lower density rather than only its end. ~5.8MB at the cap.
+    static let maxRays = 120_000
+    private var lastDepthSample: TimeInterval = 0
     /// Where the user has said "that is not a socket".
     ///
     /// Without this, deleting is theatre: detection keeps running, the same
@@ -220,6 +244,7 @@ final class FixtureCapture {
         tracks.removeAll()
         sightings.removeAll()
         rays.removeAll()
+        lastDepthSample = 0
         framesAnalysed = 0
         rawDetections = 0
         rejectedByGeometry = 0
@@ -266,12 +291,6 @@ final class FixtureCapture {
             // matters — is it plate-sized, is it on a wall, is that wall
             // vertical, where exactly is it — is answered here.
             let depth = depthData.flatMap { DepthGate.snapshot($0) }
-            let sampled = depth.map {
-                FixtureCapture.sampleRays(
-                    $0, intrinsics: intrinsics,
-                    imageSize: (width: width, height: height), cameraTransform: transform
-                )
-            } ?? []
             var measured: [(SocketDetection, PlateGeometry)] = []
             if let depth {
                 // Measure the best few, not all of them. Each measurement fits a
@@ -318,10 +337,6 @@ final class FixtureCapture {
                 self.framesAnalysed += 1
                 self.rawDetections += candidates
                 self.depthAvailable = hasDepth
-                self.rays.append(contentsOf: sampled)
-                if self.rays.count > FixtureCapture.maxRays {
-                    self.rays = stride(from: 0, to: self.rays.count, by: 2).map { self.rays[$0] }
-                }
                 if hasDepth {
                     self.rejectedByGeometry += candidates - placed.count
                     let eye = SIMD3<Double>(
@@ -348,37 +363,120 @@ final class FixtureCapture {
         }
     }
 
-    // MARK: Glass evidence
+    // MARK: Glass and column evidence
 
-    /// Unproject a sparse grid of the depth map into world rays (eye → hit).
-    private static func sampleRays(
-        _ depth: DepthFrame,
+    /// Bank a sparse grid of this frame's depth readings for `GlassFinder` and
+    /// `PillarFinder`. Call from the main thread on every tick of the scan —
+    /// detection running or not. It throttles itself.
+    func bankDepth(frame: ARFrame) {
+        guard frame.timestamp - lastDepthSample >= FixtureCapture.depthInterval else { return }
+        // Raw depth, not smoothed: temporal smoothing paints over exactly the
+        // holes a pane of glass leaves in it.
+        guard let data = frame.sceneDepth ?? frame.smoothedSceneDepth else { return }
+        lastDepthSample = frame.timestamp
+        rays.append(contentsOf: FixtureCapture.sampleDepth(
+            data,
+            image: frame.capturedImage,
+            intrinsics: frame.camera.intrinsics,
+            cameraTransform: frame.camera.transform
+        ))
+        if rays.count > FixtureCapture.maxRays {
+            rays = stride(from: 0, to: rays.count, by: 2).map { rays[$0] }
+        }
+    }
+
+    /// Unproject a sparse grid of the depth map into world readings, each with
+    /// its ARKit confidence and the camera's brightness at that spot.
+    static func sampleDepth(
+        _ data: ARDepthData,
+        image: CVPixelBuffer,
         intrinsics: simd_float3x3,
-        imageSize: (width: Int, height: Int),
         cameraTransform t: simd_float4x4
-    ) -> [(eye: SIMD3<Float>, hit: SIMD3<Float>)] {
-        guard depth.width > 0, depth.height > 0, imageSize.width > 0, imageSize.height > 0 else { return [] }
+    ) -> [DepthSample] {
+        let map = data.depthMap
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return [] }
+        let dw = CVPixelBufferGetWidth(map), dh = CVPixelBufferGetHeight(map)
+        let dRow = CVPixelBufferGetBytesPerRow(map)
+        let imageW = CVPixelBufferGetWidth(image), imageH = CVPixelBufferGetHeight(image)
+        guard dw > 0, dh > 0, imageW > 0, imageH > 0 else { return [] }
+
+        // Confidence is a parallel 8-bit map: 0 low, 1 medium, 2 high. Without
+        // one, every reading is taken as measured.
+        let cmap = data.confidenceMap
+        if let cmap { CVPixelBufferLockBaseAddress(cmap, .readOnly) }
+        defer { if let cmap { CVPixelBufferUnlockBaseAddress(cmap, .readOnly) } }
+        let cBase = cmap.flatMap { CVPixelBufferGetBaseAddress($0) }
+        let cw = cmap.map { CVPixelBufferGetWidth($0) } ?? 0
+        let ch = cmap.map { CVPixelBufferGetHeight($0) } ?? 0
+        let cRow = cmap.map { CVPixelBufferGetBytesPerRow($0) } ?? 0
+
+        // Brightness straight from the luma plane of the camera image.
+        CVPixelBufferLockBaseAddress(image, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
+        let hasLuma = CVPixelBufferGetPlaneCount(image) >= 1
+        let yBase = hasLuma ? CVPixelBufferGetBaseAddressOfPlane(image, 0) : nil
+        let yw = hasLuma ? CVPixelBufferGetWidthOfPlane(image, 0) : 0
+        let yh = hasLuma ? CVPixelBufferGetHeightOfPlane(image, 0) : 0
+        let yRow = hasLuma ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : 0
+
         // Intrinsics are for the CAPTURED image; scale them to the depth map.
-        let sx = Float(depth.width) / Float(imageSize.width)
-        let sy = Float(depth.height) / Float(imageSize.height)
+        let sx = Float(dw) / Float(imageW)
+        let sy = Float(dh) / Float(imageH)
         let fx = intrinsics.columns.0.x * sx, fy = intrinsics.columns.1.y * sy
         let cx = intrinsics.columns.2.x * sx, cy = intrinsics.columns.2.y * sy
         guard fx > 0, fy > 0 else { return [] }
         let eye = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
 
-        var out: [(eye: SIMD3<Float>, hit: SIMD3<Float>)] = []
+        var out: [DepthSample] = []
         out.reserveCapacity(rayColumns * rayRows)
         for gy in 0..<rayRows {
-            let py = (Float(gy) + 0.5) * Float(depth.height) / Float(rayRows)
+            let py = (Float(gy) + 0.5) * Float(dh) / Float(rayRows)
+            let iy = min(dh - 1, Int(py))
+            let row = base.advanced(by: iy * dRow).assumingMemoryBound(to: Float32.self)
             for gx in 0..<rayColumns {
-                let px = (Float(gx) + 0.5) * Float(depth.width) / Float(rayColumns)
-                let d = depth.at(Int(px), Int(py))
-                // Too close to say anything about a wall; 0 is "no reading".
-                guard d > 0.3 else { continue }
+                let px = (Float(gx) + 0.5) * Float(dw) / Float(rayColumns)
+                let ix = min(dw - 1, Int(px))
+                var range = row[ix]
+                var confidence: UInt8 = 2
+                if let cBase, cw > 0, ch > 0 {
+                    let cxi = min(cw - 1, ix * cw / dw), cyi = min(ch - 1, iy * ch / dh)
+                    confidence = min(2, cBase.advanced(by: cyi * cRow).assumingMemoryBound(to: UInt8.self)[cxi])
+                }
+                if !(range.isFinite && range > 0) {
+                    // No depth at all: nothing measurable along this line of sight.
+                    range = noDepthM
+                    confidence = 0
+                } else if range <= 0.3 {
+                    // Too close to say anything about a wall.
+                    continue
+                }
                 // Camera space (x right, y up, looking down −z) → world.
-                let local = SIMD4<Float>((px - cx) / fx * d, -(py - cy) / fy * d, -d, 1)
+                let local = SIMD4<Float>((px - cx) / fx * range, -(py - cy) / fy * range, -range, 1)
                 let world = t * local
-                out.append((eye: eye, hit: SIMD3<Float>(world.x, world.y, world.z)))
+
+                // Mean of the 3x3 image pixels at the same spot.
+                var luma: UInt8 = 0
+                if let yBase, yw > 0, yh > 0 {
+                    let ux = min(yw - 1, Int(px / Float(dw) * Float(yw)))
+                    let uy = min(yh - 1, Int(py / Float(dh) * Float(yh)))
+                    var sum = 0, n = 0
+                    for yy in max(0, uy - 1)...min(yh - 1, uy + 1) {
+                        let line = yBase.advanced(by: yy * yRow).assumingMemoryBound(to: UInt8.self)
+                        for xx in max(0, ux - 1)...min(yw - 1, ux + 1) {
+                            sum += Int(line[xx])
+                            n += 1
+                        }
+                    }
+                    luma = UInt8(min(255, sum / max(1, n)))
+                }
+                out.append(DepthSample(
+                    eye: eye,
+                    hit: SIMD3<Float>(world.x, world.y, world.z),
+                    confidence: confidence,
+                    luma: luma
+                ))
             }
         }
         return out

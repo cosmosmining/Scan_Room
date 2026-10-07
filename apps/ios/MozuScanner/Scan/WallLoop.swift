@@ -64,6 +64,9 @@ enum WallLoop {
         /// Yaw of the box's width axis, radians, in the same convention as
         /// `ScanObject.rotation` (0 for round).
         var rotation: Double
+        /// Only one face of it was seen, so where the rest of it stands is a
+        /// guess. The depth readings (`PillarFinder`) replace it when they found it.
+        var partial: Bool = false
     }
 
     struct Analysis {
@@ -164,7 +167,13 @@ enum WallLoop {
         // corners it can stop short, and a real column then looks as if it
         // stands outside the room.
         let clusters = pillarClusters(walls).filter { !clusterIsBoundary($0, walls) }
-        let inCluster = Set(clusters.flatMap { $0 })
+        let clustered = Set(clusters.flatMap { $0 })
+        // …and single surfaces standing on their own: one face of a column (all
+        // RoomPlan saw of it), or the side of a kitchen island. Chained into the
+        // outline, a lone face in the middle of the room drew a spike out to it
+        // and back — the floor plan of an open-plan flat with a column in it.
+        let lone = loneSurfaces(walls, taken: clustered)
+        let inCluster = clustered.union(lone)
         var outline = buildOutline(walls.indices.filter { !inCluster.contains($0) }.map { walls[$0] })
 
         // A true pillar stands INSIDE the room it was taken out of, clear of its
@@ -193,6 +202,31 @@ enum WallLoop {
                 rejected.formUnion(idx)
             }
         }
+        // A lone surface is only off the boundary if it stands well clear of
+        // every wall: closer, it is a fragment of one. Clear of them, a surface
+        // reaching the ceiling is a column; anything lower (an island, a
+        // half-height partition) is in the room, not round it, and is dropped
+        // like clutter.
+        let ceiling = walls.reduce(0.0) { max($0, $1.topMm ?? 0) }
+        var faces: [Int] = []
+        var interior = 0
+        for i in lone {
+            let s = walls[i]
+            let pts = [s.a, s.b, Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2)]
+            let clear = outline.count >= 3 && pts.allSatisfy { p in
+                inside(p, outline) && outline.indices.allSatisfy {
+                    Geo.distanceToSegment(p, outline[$0], outline[($0 + 1) % outline.count]) >= loneClearMm
+                }
+            }
+            if !clear {
+                rejected.insert(i)
+            } else if let top = s.topMm, let height = s.heightMm,
+                      top >= ceiling - loneCeilingGapMm, height >= 0.75 * ceiling {
+                faces.append(i)
+            } else {
+                interior += 1
+            }
+        }
         if !rejected.isEmpty {
             outline = buildOutline(walls.indices
                 .filter { !inCluster.contains($0) || rejected.contains($0) }
@@ -201,8 +235,44 @@ enum WallLoop {
 
         return Analysis(
             outline: outline,
-            pillars: accepted.map { fitPillar($0.map { walls[$0] }) },
-            clutterRejected: clutterRejected
+            pillars: accepted.map { fitPillar($0.map { walls[$0] }) } + faces.map { facePillar(walls[$0]) },
+            clutterRejected: clutterRejected + interior
+        )
+    }
+
+    /// A lone surface stands at least this clear of every wall of the room…
+    static let loneClearMm = 500.0
+    /// …is at least this wide (narrower is noise)…
+    static let loneMinMm = 150.0
+    /// …and, to be a column, tops out within this of the ceiling.
+    static let loneCeilingGapMm = 300.0
+
+    /// Surfaces with nothing else near them: no other surface within linking
+    /// distance, short enough to be a column face, carrying the heights that
+    /// tell a column from an island, and not a piece of the boundary (its ends
+    /// do not run on into walls on two different lines).
+    private static func loneSurfaces(_ walls: [Segment], taken: Set<Int>) -> [Int] {
+        walls.indices.filter { i in
+            let s = walls[i]
+            guard !taken.contains(i), s.heightMm != nil, s.topMm != nil else { return false }
+            let len = Geo.distance(s.a, s.b)
+            guard len >= loneMinMm, len <= pillarMaxFacetMm else { return false }
+            guard !walls.indices.contains(where: { $0 != i && segmentGap(s, walls[$0]) <= pillarLinkMm }) else { return false }
+            return !clusterIsBoundary([i], walls)
+        }
+    }
+
+    /// The one face RoomPlan saw of a column. Which side of it the column is on
+    /// is not known from the face alone, so it is drawn as a square on the
+    /// face — the depth readings (`PillarFinder`) place it properly when they
+    /// saw it.
+    private static func facePillar(_ s: Segment) -> Pillar {
+        let len = Geo.distance(s.a, s.b)
+        return Pillar(
+            center: Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2),
+            shape: .box, width: len, depth: len,
+            rotation: atan2(s.b.z - s.a.z, s.b.x - s.a.x),
+            partial: true
         )
     }
 
@@ -669,7 +739,7 @@ enum WallLoop {
             let span = max((xs.max() ?? 0) - (xs.min() ?? 0), (zs.max() ?? 0) - (zs.min() ?? 0))
             guard span <= pillarMaxSpanMm else { return false }
             // A straight run of short fragments is a wall, however short.
-            return headingSpread(facets) >= 60 * .pi / 180
+            return headingSpread(facets) >= 60 * .pi / 180 || smoothArc(facets)
         }.map { $0.sorted() }.sorted { ($0.first ?? 0) < ($1.first ?? 0) }
     }
 
@@ -680,7 +750,7 @@ enum WallLoop {
         }
         if let circle = fitCircle(pts),
            facets.count >= 3,
-           headingSpread(facets) >= 100 * .pi / 180,
+           headingSpread(facets) >= 100 * .pi / 180 || smoothArc(facets),
            circle.rms <= circle.radius * 0.12 {
             let d = circle.radius * 2
             return Pillar(center: circle.center, shape: .round, width: d, depth: d, rotation: 0)
@@ -752,6 +822,25 @@ enum WallLoop {
         var gap = .pi - last + first
         for i in 1..<hs.count { gap = max(gap, hs[i] - hs[i - 1]) }
         return .pi - gap
+    }
+
+    /// Do these facets bend round smoothly — an arc, not a corner? Three or
+    /// more facets turning through at least 40° with no single turn wider than
+    /// 30°. A column RoomPlan only saw part of arrives as a partial arc; judged
+    /// by spread alone it was boxed round the visible arc, its centre on the
+    /// near face. A square has two face directions a right angle apart; an arc
+    /// has many, close together.
+    private static func smoothArc(_ segs: [Segment]) -> Bool {
+        guard segs.count >= 3, headingSpread(segs) >= 40 * .pi / 180 else { return false }
+        let hs = segs.map { s -> Double in
+            let h = atan2(s.b.z - s.a.z, s.b.x - s.a.x)
+            return (h.truncatingRemainder(dividingBy: .pi) + .pi).truncatingRemainder(dividingBy: .pi)
+        }.sorted()
+        var gaps = [Double.pi - hs[hs.count - 1] + hs[0]]
+        for i in 1..<hs.count { gaps.append(hs[i] - hs[i - 1]) }
+        gaps.sort(by: >)
+        // The widest gap is the part of the compass the arc does not cover.
+        return gaps[1] <= 30 * .pi / 180
     }
 
     private static func segmentGap(_ s: Segment, _ t: Segment) -> Double {

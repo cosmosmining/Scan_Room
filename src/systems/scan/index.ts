@@ -89,3 +89,10 @@ export {
   type GlassOpening,
   type GlassOptions,
 } from './glassFinder';
+export {
+  findPillars,
+  mergePillars,
+  PILLAR_DEFAULTS,
+  type Footprint,
+  type PillarOptions,
+} from './pillarFinder';

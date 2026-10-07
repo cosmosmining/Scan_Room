@@ -23,7 +23,7 @@ enum FloorplanBuilder {
         from room: CapturedRoom,
         tracks: [SocketTrack] = [],
         sightings: [FixtureSighting] = [],
-        rays: [(eye: SIMD3<Float>, hit: SIMD3<Float>)] = []
+        rays: [DepthSample] = []
     ) -> RoomScan {
         let height = ceilingHeightMm(room.walls)
         let floorY = floorYMm(room.walls)
@@ -33,19 +33,31 @@ enum FloorplanBuilder {
         let cleaned = Geo.ensureCCW(Geo.simplify(analysis.outline))
         let finalPolygon = cleaned.isEmpty ? boundingBox(room.walls) : cleaned
         let recognised = mapOpenings(room, to: finalPolygon, floorYMm: floorY)
-        // Glass RoomPlan did not recognise, from readings that went through the
-        // finished walls. Suggestions: see `GlassFinder` on mirrors.
+        let scanned = room.objects.map(scanObject(from:))
+        let depth = rays.map { ray($0, floorYMm: floorY) }
+        // Glass RoomPlan did not recognise: readings that went through the
+        // finished walls, or found nothing to measure where a wall should be.
+        // Suggestions — see `GlassFinder` on mirrors. RoomPlan's televisions go
+        // in as already accounted for: on, a screen looks like daylight.
         let glass = GlassFinder.openings(
-            rays: rays.map { ray in
-                GlassFinder.Ray(eye: point(ray.eye, floorYMm: floorY), hit: point(ray.hit, floorYMm: floorY))
-            },
+            rays: depth,
             polygon: finalPolygon,
             ceilingMm: height,
-            existing: recognised.map { GlassFinder.Known(wall: $0.wall, offset: $0.offset, width: $0.width) }
+            existing: recognised.map(known) + screens(scanned, polygon: finalPolygon)
         )
         let openings = recognised + glass
-        let objects = room.objects.map(scanObject(from:))
-            + analysis.pillars.map { column($0, heightMm: height) }
+        // Columns: RoomPlan's surfaces where it reported them, the depth
+        // readings for the ones it saw one face of or missed altogether.
+        let pillars = PillarFinder.merge(
+            fromWalls: analysis.pillars,
+            fromDepth: PillarFinder.pillars(
+                rays: depth,
+                polygon: finalPolygon,
+                ceilingMm: height,
+                exclude: scanned.map(footprint)
+            )
+        )
+        let objects = scanned + pillars.map { column($0, heightMm: height) }
         // Measured tracks when there were any; the ray-cast fallback only for a
         // session that never gave us depth.
         let fixtures: [ScanFixture]
@@ -73,6 +85,62 @@ enum FloorplanBuilder {
             source: .roomplan,
             confidence: 0.92
         )
+    }
+
+    // MARK: Live preview
+
+    /// What the live preview needs from RoomPlan's room-so-far. Taken on the
+    /// main thread (it is a handful of walls), so the part that walks every
+    /// depth reading can run elsewhere on plain values.
+    struct PreviewInput {
+        var polygon: [Vec2]
+        var ceilingMm: Double
+        var floorYMm: Double
+        var known: [GlassFinder.Known]
+        var windows: Int
+        var footprints: [PillarFinder.Footprint]
+        var wallPillars: [WallLoop.Pillar]
+    }
+
+    /// Glass and columns found so far, for the scan screen.
+    struct Preview {
+        var glass: Int
+        var pillars: Int
+    }
+
+    static func previewInput(from room: CapturedRoom) -> PreviewInput? {
+        guard !room.walls.isEmpty else { return nil }
+        let floorY = floorYMm(room.walls)
+        let analysis = WallLoop.analyse(wallSegments(room.walls, floorYMm: floorY))
+        let polygon = Geo.ensureCCW(Geo.simplify(analysis.outline))
+        guard polygon.count >= 3 else { return nil }
+        let recognised = mapOpenings(room, to: polygon, floorYMm: floorY)
+        let scanned = room.objects.map(scanObject(from:))
+        return PreviewInput(
+            polygon: polygon,
+            ceilingMm: ceilingHeightMm(room.walls),
+            floorYMm: floorY,
+            known: recognised.map(known) + screens(scanned, polygon: polygon),
+            windows: recognised.filter { $0.type == .window }.count,
+            footprints: scanned.map(footprint),
+            wallPillars: analysis.pillars
+        )
+    }
+
+    /// The same finders `roomScan` runs, on the room so far. Pure: safe off the
+    /// main thread.
+    static func preview(_ input: PreviewInput, samples: [DepthSample]) -> Preview {
+        let depth = samples.map { ray($0, floorYMm: input.floorYMm) }
+        let glass = GlassFinder.openings(
+            rays: depth, polygon: input.polygon, ceilingMm: input.ceilingMm, existing: input.known
+        )
+        let pillars = PillarFinder.merge(
+            fromWalls: input.wallPillars,
+            fromDepth: PillarFinder.pillars(
+                rays: depth, polygon: input.polygon, ceilingMm: input.ceilingMm, exclude: input.footprints
+            )
+        )
+        return Preview(glass: input.windows + glass.count, pillars: pillars.count)
     }
 
     // MARK: Wall endpoints → ordered loop
@@ -251,7 +319,40 @@ enum FloorplanBuilder {
         )
     }
 
+    /// A scanned object's footprint, for `PillarFinder` to leave alone.
+    private static func footprint(_ o: ScanObject) -> PillarFinder.Footprint {
+        PillarFinder.Footprint(center: o.center, width: o.width, depth: o.depth, rotation: o.rotation)
+    }
+
+    private static func known(_ o: ScanOpening) -> GlassFinder.Known {
+        GlassFinder.Known(wall: o.wall, offset: o.offset, width: o.width)
+    }
+
+    /// Televisions RoomPlan recognised, as spans of the wall they stand
+    /// against. Matched on the category's name, which is how the scan records
+    /// it (see `scanObject`).
+    private static func screens(_ objects: [ScanObject], polygon: [Vec2]) -> [GlassFinder.Known] {
+        objects.compactMap { o -> GlassFinder.Known? in
+            guard o.category == "television", let edge = nearestEdge(to: o.center, in: polygon) else { return nil }
+            let start = polygon[edge]
+            let end = polygon[(edge + 1) % polygon.count]
+            guard distanceToSegment(o.center, start, end) <= 600 else { return nil }
+            let dir = Geo.normalize(Geo.sub(end, start))
+            return GlassFinder.Known(wall: edge, offset: dot(Geo.sub(o.center, start), dir) - o.width / 2, width: o.width)
+        }
+    }
+
     // MARK: Helpers
+
+    /// A banked depth reading in plan millimetres, y as height above the floor.
+    private static func ray(_ s: DepthSample, floorYMm: Double) -> GlassFinder.Ray {
+        GlassFinder.Ray(
+            eye: point(s.eye, floorYMm: floorYMm),
+            hit: point(s.hit, floorYMm: floorYMm),
+            confidence: Int(s.confidence),
+            luma: Double(s.luma)
+        )
+    }
 
     /// World metres → plan millimetres with y as height above the floor.
     private static func point(_ v: SIMD3<Float>, floorYMm: Double) -> GlassFinder.Point3 {
