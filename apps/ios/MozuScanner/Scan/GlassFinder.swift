@@ -179,9 +179,11 @@ enum GlassFinder {
                 // Nothing measured. Where does its line of sight reach this wall?
                 guard sEye > 0, sHit <= onWallMm, sEye - sHit > 1e-6, length > 0 else { continue }
                 // Squarely enough: a wall seen edge-on returns nothing even when solid.
-                guard (sEye - sHit) / length >= voidMinCos else { continue }
-                let f = sEye / (sEye - sHit)
-                guard f * length <= voidRangeMm else { continue }
+                let square: Double = (sEye - sHit) / length
+                guard square >= voidMinCos else { continue }
+                let f: Double = sEye / (sEye - sHit)
+                let reachMm: Double = f * length
+                guard reachMm <= voidRangeMm else { continue }
                 let cx = eye.x + (hit.x - eye.x) * f
                 let cz = eye.z + (hit.z - eye.z) * f
                 let t = (cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z
@@ -194,7 +196,8 @@ enum GlassFinder {
             guard y >= 0, y <= ceilingMm else { continue }
             let cx = eye.x + (hit.x - eye.x) * at.f
             let cz = eye.z + (hit.z - eye.z) * at.f
-            let weight = bright && at.f * length <= brightRangeMm ? 2 : 1
+            let close: Bool = at.f * length <= brightRangeMm
+            let weight: Int = bright && close ? 2 : 1
             w.through[w.cell((cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z, y)] += weight
         }
 

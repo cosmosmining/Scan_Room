@@ -102,14 +102,16 @@ enum PillarFinder {
                 cell = Cell(key: key, ix: ix, iz: iz)
                 cells[key] = cell
             }
-            cell.bands |= 1 << min(bands - 1, Int(((hit.y - lo) / bandMm).rounded(.down)))
+            let band: Int = min(bands - 1, Int(((hit.y - lo) / bandMm).rounded(.down)))
+            cell.bands |= 1 << band
             cell.pts.append(xs.count)
             xs.append(hit.x); zs.append(hit.z); ex.append(eye.x); ez.append(eye.z)
         }
 
         // The band a column must be seen in (or above): the top one, or the one
         // holding `columnMm` in a room taller than that.
-        let topBand = min(bands - 1, max(0, Int(((columnMm - lo) / bandMm).rounded(.down))))
+        let columnBand: Int = Int(((columnMm - lo) / bandMm).rounded(.down))
+        let topBand: Int = min(bands - 1, max(0, columnBand))
 
         // 2 — Patches of well-seen cells seen that HIGH UP, a one-cell gap
         // allowed. Only cells seen that high link up, so a person, a chair or a
@@ -176,8 +178,8 @@ enum PillarFinder {
             // already known as furniture, not found twice.
             let clear: Bool
             if pillar.shape == .round {
-                clear = inside(pillar.center, polygon)
-                    && edgeClearance(pillar.center, polygon) - pillar.width / 2 >= footprintClearMm
+                let gap: Double = edgeClearance(pillar.center, polygon) - pillar.width / 2
+                clear = inside(pillar.center, polygon) && gap >= footprintClearMm
             } else {
                 clear = corners(pillar).allSatisfy {
                     inside($0, polygon) && edgeClearance($0, polygon) >= footprintClearMm
@@ -214,7 +216,8 @@ enum PillarFinder {
         // tie. Not the smallest box: two faces seen round a corner make an L,
         // and an L's smallest box can sit at 45° to it.
         func sides(_ deg: Int) -> (a: Double, c: Double, s: Double, u0: Double, u1: Double, v0: Double, v1: Double, e2: Double) {
-            let a = Double(deg) * .pi / 180, c = cos(a), s = sin(a)
+            let a: Double = Double(deg) * Double.pi / 180
+            let c: Double = cos(a), s: Double = sin(a)
             var us = [Double](repeating: 0, count: n), vs = [Double](repeating: 0, count: n)
             var u0 = Double.infinity, u1 = -Double.infinity, v0 = Double.infinity, v1 = -Double.infinity
             for i in 0..<n {
@@ -226,7 +229,9 @@ enum PillarFinder {
             }
             var e2 = 0.0
             for i in 0..<n {
-                let e = min(us[i] - u0, u1 - us[i], vs[i] - v0, v1 - vs[i])
+                let eu: Double = min(us[i] - u0, u1 - us[i])
+                let ev: Double = min(vs[i] - v0, v1 - vs[i])
+                let e: Double = min(eu, ev)
                 e2 += e * e
             }
             return (a, c, s, u0, u1, v0, v1, e2)
@@ -247,23 +252,32 @@ enum PillarFinder {
         }
         eu /= count; ev /= count
 
-        if let circle = fitCircle(px, pz),
-           circle.r * 2 >= minSpanMm, circle.r * 2 <= maxSpanMm,
-           circle.rms <= max(15, 0.1 * circle.r), circle.rms < boxRms {
-            // How much of the circle the readings cover, and whether its centre
-            // lies BEHIND them as seen — the outside of a column, not the inside
-            // of a curved wall.
-            let angles = (0..<n).map { atan2(pz[$0] - circle.cz, px[$0] - circle.cx) }.sorted()
-            var gap = 2 * .pi - angles[n - 1] + angles[0]
-            for i in 1..<n { gap = max(gap, angles[i] - angles[i - 1]) }
-            var behind = 0
-            for i in 0..<n
-            where (circle.cx - px[i]) * (px[i] - ex[i]) + (circle.cz - pz[i]) * (pz[i] - ez[i]) > 0 {
-                behind += 1
-            }
-            if 2 * .pi - gap >= 70 * .pi / 180, Double(behind) >= 0.8 * count {
-                let d = circle.r * 2
-                return WallLoop.Pillar(center: Vec2(x: circle.cx, z: circle.cz), shape: .round, width: d, depth: d, rotation: 0)
+        let fullTurn: Double = 2 * Double.pi
+        let minArc: Double = 70 * Double.pi / 180
+        if let circle = fitCircle(px, pz) {
+            let across: Double = circle.r * 2
+            let tolerance: Double = max(15, 0.1 * circle.r)
+            if across >= minSpanMm, across <= maxSpanMm, circle.rms <= tolerance, circle.rms < boxRms {
+                // How much of the circle the readings cover, and whether its
+                // centre lies BEHIND them as seen — the outside of a column, not
+                // the inside of a curved wall.
+                var angles: [Double] = []
+                angles.reserveCapacity(n)
+                for i in 0..<n { angles.append(atan2(pz[i] - circle.cz, px[i] - circle.cx)) }
+                angles.sort()
+                var gap: Double = fullTurn - angles[n - 1] + angles[0]
+                for i in 1..<n { gap = max(gap, angles[i] - angles[i - 1]) }
+                var behind = 0
+                for i in 0..<n {
+                    let alongX: Double = (circle.cx - px[i]) * (px[i] - ex[i])
+                    let alongZ: Double = (circle.cz - pz[i]) * (pz[i] - ez[i])
+                    if alongX + alongZ > 0 { behind += 1 }
+                }
+                if fullTurn - gap >= minArc, Double(behind) >= 0.8 * count {
+                    return WallLoop.Pillar(
+                        center: Vec2(x: circle.cx, z: circle.cz), shape: .round, width: across, depth: across, rotation: 0
+                    )
+                }
             }
         }
 
@@ -271,14 +285,17 @@ enum PillarFinder {
         var uc = (box.u0 + box.u1) / 2, vc = (box.v0 + box.v1) / 2
         // One face seen: a square column whose far side was never in view.
         if d < 0.3 * w {
-            vc += (ev > vc ? -1 : 1) * (w - d) / 2
+            let away: Double = ev > vc ? -1 : 1
+            vc += away * (w - d) / 2
             d = w
         } else if w < 0.3 * d {
-            uc += (eu > uc ? -1 : 1) * (d - w) / 2
+            let away: Double = eu > uc ? -1 : 1
+            uc += away * (d - w) / 2
             w = d
         }
         // A tall cupboard's front, or a stub of wall, is long and thin; a column is not.
-        guard min(w, d) >= minSpanMm, max(w, d) <= maxSpanMm, max(w, d) <= maxAspect * min(w, d) else { return nil }
+        let short: Double = min(w, d), long: Double = max(w, d)
+        guard short >= minSpanMm, long <= maxSpanMm, long <= maxAspect * short else { return nil }
         return WallLoop.Pillar(
             center: Vec2(x: uc * c - vc * s, z: uc * s + vc * c),
             shape: .box, width: w, depth: d, rotation: a
@@ -329,10 +346,11 @@ enum PillarFinder {
     private static func length(_ x: Double, _ z: Double) -> Double { (x * x + z * z).squareRoot() }
 
     private static func distToSegment(_ p: Vec2, _ a: Vec2, _ b: Vec2) -> Double {
-        let abx = b.x - a.x, abz = b.z - a.z
-        let l2 = abx * abx + abz * abz
+        let abx: Double = b.x - a.x, abz: Double = b.z - a.z
+        let l2: Double = abx * abx + abz * abz
         if l2 < 1e-9 { return length(p.x - a.x, p.z - a.z) }
-        let t = max(0, min(1, ((p.x - a.x) * abx + (p.z - a.z) * abz) / l2))
+        let along: Double = (p.x - a.x) * abx + (p.z - a.z) * abz
+        let t: Double = max(0, min(1, along / l2))
         return length(p.x - a.x - abx * t, p.z - a.z - abz * t)
     }
 
@@ -358,22 +376,27 @@ enum PillarFinder {
     }
 
     private static func within(_ p: Vec2, _ f: Footprint, grow: Double) -> Bool {
-        let c = cos(f.rotation), s = sin(f.rotation)
-        let dx = p.x - f.center.x, dz = p.z - f.center.z
-        return abs(dx * c + dz * s) <= f.width / 2 + grow && abs(-dx * s + dz * c) <= f.depth / 2 + grow
+        let c: Double = cos(f.rotation), s: Double = sin(f.rotation)
+        let dx: Double = p.x - f.center.x, dz: Double = p.z - f.center.z
+        let u: Double = dx * c + dz * s
+        let v: Double = dz * c - dx * s
+        return abs(u) <= f.width / 2 + grow && abs(v) <= f.depth / 2 + grow
     }
 
     /// Two columns closer than their half-sizes summed are the same column.
     private static func overlaps(_ a: WallLoop.Pillar, _ b: WallLoop.Pillar) -> Bool {
-        length(a.center.x - b.center.x, a.center.z - b.center.z)
-            < (max(a.width, a.depth) + max(b.width, b.depth)) / 2
+        let gap: Double = length(a.center.x - b.center.x, a.center.z - b.center.z)
+        let reach: Double = (max(a.width, a.depth) + max(b.width, b.depth)) / 2
+        return gap < reach
     }
 
     private static func corners(_ p: WallLoop.Pillar) -> [Vec2] {
-        let c = cos(p.rotation), s = sin(p.rotation)
-        let hw = p.width / 2, hd = p.depth / 2
-        return [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map { u, v in
-            Vec2(x: p.center.x + u * hw * c - v * hd * s, z: p.center.z + u * hw * s + v * hd * c)
+        let c: Double = cos(p.rotation), s: Double = sin(p.rotation)
+        let hw: Double = p.width / 2, hd: Double = p.depth / 2
+        let signs: [(u: Double, v: Double)] = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+        return signs.map { k -> Vec2 in
+            let along: Double = k.u * hw, across: Double = k.v * hd
+            return Vec2(x: p.center.x + along * c - across * s, z: p.center.z + along * s + across * c)
         }
     }
 }

@@ -212,16 +212,19 @@ enum WallLoop {
         var interior = 0
         for i in lone {
             let s = walls[i]
-            let pts = [s.a, s.b, Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2)]
-            let clear = outline.count >= 3 && pts.allSatisfy { p in
-                inside(p, outline) && outline.indices.allSatisfy {
-                    Geo.distanceToSegment(p, outline[$0], outline[($0 + 1) % outline.count]) >= loneClearMm
+            let mid = Vec2(x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2)
+            var clear = outline.count >= 3
+            for p in [s.a, s.b, mid] where clear {
+                if !inside(p, outline) { clear = false; break }
+                for k in outline.indices {
+                    let edge = Geo.distanceToSegment(p, outline[k], outline[(k + 1) % outline.count])
+                    if edge < loneClearMm { clear = false; break }
                 }
             }
             if !clear {
                 rejected.insert(i)
             } else if let top = s.topMm, let height = s.heightMm,
-                      top >= ceiling - loneCeilingGapMm, height >= 0.75 * ceiling {
+                      top >= ceiling - loneCeilingGapMm, height >= ceiling * 0.75 {
                 faces.append(i)
             } else {
                 interior += 1
@@ -233,11 +236,9 @@ enum WallLoop {
                 .map { walls[$0] })
         }
 
-        return Analysis(
-            outline: outline,
-            pillars: accepted.map { fitPillar($0.map { walls[$0] }) } + faces.map { facePillar(walls[$0]) },
-            clutterRejected: clutterRejected + interior
-        )
+        var pillars: [Pillar] = accepted.map { idx in fitPillar(idx.map { walls[$0] }) }
+        for i in faces { pillars.append(facePillar(walls[i])) }
+        return Analysis(outline: outline, pillars: pillars, clutterRejected: clutterRejected + interior)
     }
 
     /// A lone surface stands at least this clear of every wall of the room…
