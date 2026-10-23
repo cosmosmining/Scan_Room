@@ -1,0 +1,392 @@
+[
+  {
+    "id": "KT01",
+    "name": "Tall Cabinet KT01",
+    "category": "Kitchen · Tall",
+    "size": [
+      0.605,
+      2.35,
+      0.936
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 860973
+  },
+  {
+    "id": "KT02",
+    "name": "Tall Cabinet KT02",
+    "category": "Kitchen · Tall",
+    "size": [
+      0.605,
+      2.35,
+      1.128
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 862921
+  },
+  {
+    "id": "KT03",
+    "name": "Tall Cabinet KT03",
+    "category": "Kitchen · Tall",
+    "size": [
+      0.604,
+      2.35,
+      0.759
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 947129
+  },
+  {
+    "id": "KT04",
+    "name": "Tall Cabinet KT04",
+    "category": "Kitchen · Tall",
+    "size": [
+      0.6,
+      2.35,
+      0.842
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 623918
+  },
+  {
+    "id": "KT05",
+    "name": "Tall Cabinet KT05",
+    "category": "Kitchen · Tall",
+    "size": [
+      0.603,
+      2.35,
+      1.167
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 860589
+  },
+  {
+    "id": "KT06",
+    "name": "Tall Cabinet KT06",
+    "category": "Kitchen · Tall",
+    "size": [
+      0.906,
+      2.35,
+      0.835
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 672558
+  },
+  {
+    "id": "KF01",
+    "name": "Base Cabinet KF01",
+    "category": "Kitchen · Base",
+    "size": [
+      0.455,
+      0.8,
+      0.6
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 612918
+  },
+  {
+    "id": "KF02",
+    "name": "Base Cabinet KF02",
+    "category": "Kitchen · Base",
+    "size": [
+      0.455,
+      0.8,
+      0.607
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 284813
+  },
+  {
+    "id": "KF03",
+    "name": "Base Cabinet KF03",
+    "category": "Kitchen · Base",
+    "size": [
+      0.45,
+      0.8,
+      0.601
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 295401
+  },
+  {
+    "id": "KF04",
+    "name": "Base Cabinet KF04",
+    "category": "Kitchen · Base",
+    "size": [
+      0.564,
+      0.66,
+      0.477
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 14733
+  },
+  {
+    "id": "KF05",
+    "name": "Base Cabinet KF05",
+    "category": "Kitchen · Base",
+    "size": [
+      0.9,
+      0.832,
+      0.614
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 462626
+  },
+  {
+    "id": "KF06",
+    "name": "Base Cabinet KF06",
+    "category": "Kitchen · Base",
+    "size": [
+      0.9,
+      0.8,
+      0.6
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 299381
+  },
+  {
+    "id": "KF07",
+    "name": "Base Cabinet KF07",
+    "category": "Kitchen · Base",
+    "size": [
+      0.9,
+      0.8,
+      0.6
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 958254
+  },
+  {
+    "id": "KF08",
+    "name": "Base Cabinet KF08",
+    "category": "Kitchen · Base",
+    "size": [
+      1,
+      0.8,
+      0.6
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 603709
+  },
+  {
+    "id": "KH01",
+    "name": "Wall Cabinet KH01",
+    "category": "Kitchen · Wall",
+    "size": [
+      0.455,
+      0.8,
+      0.597
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 343590
+  },
+  {
+    "id": "KH02",
+    "name": "Wall Cabinet KH02",
+    "category": "Kitchen · Wall",
+    "size": [
+      0.909,
+      0.8,
+      0.537
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 1428782
+  },
+  {
+    "id": "KH03",
+    "name": "Wall Cabinet KH03",
+    "category": "Kitchen · Wall",
+    "size": [
+      0.455,
+      0.8,
+      0.597
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 344274
+  },
+  {
+    "id": "KH04",
+    "name": "Wall Cabinet KH04",
+    "category": "Kitchen · Wall",
+    "size": [
+      0.9,
+      0.71,
+      0.333
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 669811
+  },
+  {
+    "id": "W04",
+    "name": "Wardrobe W04",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.56,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 55717
+  },
+  {
+    "id": "W05",
+    "name": "Wardrobe W05",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.58,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 81082
+  },
+  {
+    "id": "W06",
+    "name": "Wardrobe W06",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.58,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 82939
+  },
+  {
+    "id": "W07",
+    "name": "Wardrobe W07",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.58,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 404868
+  },
+  {
+    "id": "W08",
+    "name": "Wardrobe W08",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.58,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 369688
+  },
+  {
+    "id": "W09",
+    "name": "Wardrobe W09",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.58,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 83211
+  },
+  {
+    "id": "W10",
+    "name": "Wardrobe W10",
+    "category": "Wardrobe · Main",
+    "size": [
+      0.56,
+      2.4,
+      0.9
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 43340
+  },
+  {
+    "id": "W_ADJ1",
+    "name": "Side Cabinet ADJ ADJ1",
+    "category": "Wardrobe · Side",
+    "size": [
+      0.45,
+      0.5,
+      0.58
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 5824
+  },
+  {
+    "id": "W_ADJ2",
+    "name": "Side Cabinet ADJ ADJ2",
+    "category": "Wardrobe · Side",
+    "size": [
+      0.9,
+      0.5,
+      0.58
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 5824
+  },
+  {
+    "id": "W01",
+    "name": "Side Cabinet W01",
+    "category": "Wardrobe · Side",
+    "size": [
+      0.53,
+      2.35,
+      0.3
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 1057238
+  },
+  {
+    "id": "W02",
+    "name": "Side Cabinet W02",
+    "category": "Wardrobe · Side",
+    "size": [
+      0.45,
+      2.35,
+      0.58
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 103099
+  },
+  {
+    "id": "W03",
+    "name": "Side Cabinet W03",
+    "category": "Wardrobe · Side",
+    "size": [
+      0.45,
+      2.35,
+      0.58
+    ],
+    "sizeSource": "STEP",
+    "zipOK": true,
+    "bytes": 10121
+  }
+]

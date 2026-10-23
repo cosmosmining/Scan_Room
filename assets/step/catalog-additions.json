@@ -1,0 +1,32 @@
+[
+  {
+    "id": "closet-1000",
+    "name": "Wardrobe Closet 1000",
+    "category": "wardrobe-frame",
+    "dimensions": {
+      "width": 1000,
+      "height": 2000,
+      "depth": 600
+    },
+    "modelUrl": "/models/closet-1000.glb",
+    "stepUrl": "/cad/closet-1000.step",
+    "basePrice": 32000,
+    "source": "step",
+    "triangles": 12
+  },
+  {
+    "id": "cad-base-600",
+    "name": "CAD Base Cabinet 600",
+    "category": "kitchen-base",
+    "dimensions": {
+      "width": 600,
+      "height": 900,
+      "depth": 600
+    },
+    "modelUrl": "/models/cad-base-600.glb",
+    "stepUrl": "/cad/cad-base-600.step",
+    "basePrice": 21000,
+    "source": "step",
+    "triangles": 12
+  }
+]

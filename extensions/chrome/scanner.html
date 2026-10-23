@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>MOZU Room Scanner</title>
+  </head>
+  <body>
+    <div class="scanner">
+      <header>
+        <img src="icons/icon.svg" alt="" />
+        <div>
+          <h1 style="font-size: 18px">Scan a room → floorplan</h1>
+          <div class="muted" id="cap" style="font-size: 13px">detecting…</div>
+        </div>
+      </header>
+
+      <div class="grid2">
+        <div>
+          <div class="tabs" role="tablist">
+            <button data-mode="trace" aria-selected="true">✏️ Trace</button>
+            <button data-mode="camera">📷 Camera</button>
+            <button data-mode="manual">⌨️ Manual</button>
+            <button data-mode="ar" id="tab-ar" hidden>📐 AR</button>
+          </div>
+
+          <!-- Trace -->
+          <section class="mode active" id="mode-trace">
+            <svg id="trace-canvas"></svg>
+            <div class="row" style="margin-top: 10px">
+              <div>
+                <label>Room width (mm) — sets scale</label>
+                <input id="trace-w" type="number" value="4000" min="500" step="50" />
+              </div>
+              <div>
+                <label>Ceiling (mm)</label>
+                <input id="trace-h" type="number" value="2700" min="2000" step="50" />
+              </div>
+            </div>
+            <div class="row" style="margin-top: 10px">
+              <button class="secondary" id="trace-undo">Undo</button>
+              <button class="secondary" id="trace-clear">Clear</button>
+              <button id="trace-build">Build floorplan</button>
+            </div>
+            <p class="hint">Tap your room's corners in order. Width sets real scale; the shape follows your trace.</p>
+          </section>
+
+          <!-- Camera -->
+          <section class="mode" id="mode-camera">
+            <video id="cam" playsinline muted></video>
+            <div class="row" style="margin-top: 10px">
+              <button class="secondary" id="cam-start">Start camera</button>
+              <button id="cam-scan" disabled>Scan (turn around)</button>
+            </div>
+            <p class="hint" id="cam-status">
+              Stand in the centre and slowly turn a full circle — a vision model estimates W×D×H, then you confirm.
+            </p>
+          </section>
+
+          <!-- Manual -->
+          <section class="mode" id="mode-manual">
+            <div class="card stack">
+              <div class="row">
+                <div>
+                  <label>Width (mm)</label>
+                  <input id="man-w" type="number" value="4000" min="500" step="50" />
+                </div>
+                <div>
+                  <label>Depth (mm)</label>
+                  <input id="man-d" type="number" value="3000" min="500" step="50" />
+                </div>
+                <div>
+                  <label>Ceiling (mm)</label>
+                  <input id="man-h" type="number" value="2700" min="2000" step="50" />
+                </div>
+              </div>
+              <button id="man-build">Build floorplan</button>
+            </div>
+          </section>
+
+          <!-- AR -->
+          <section class="mode" id="mode-ar">
+            <div class="card stack">
+              <p class="muted">Walk the room and tap each floor corner — metric hit-tests build a true plan.</p>
+              <button id="ar-scan">Scan with AR</button>
+              <p class="hint" id="ar-status"></p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Result -->
+        <div>
+          <div class="preview" id="preview">Your floorplan appears here.</div>
+          <div class="stats" id="stats" hidden></div>
+          <div class="row" style="margin-top: 12px">
+            <button id="download" class="secondary" disabled>↓ Download SVG</button>
+            <button id="open-mozu" disabled>Open in MOZU →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="scanner.js"></script>
+  </body>
+</html>

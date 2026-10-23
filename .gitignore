@@ -1,0 +1,32 @@
+# dependencies
+/node_modules
+node_modules/
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env files
+.env*
+!.env.example
+
+# typescript
+*.tsbuildinfo
+
+# claude code local settings
+.claude/settings.local.json
+
+# textures, synced from apps/ios by scripts/sync-textures.mjs (predev / prebuild)
+/public/textures/

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MOZU — your room</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0b0b0d; color: #f2f2f4; height: 100vh; overflow: hidden;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  .nav { display:flex; align-items:center; gap:22px; padding:13px 26px; border-bottom:1px solid #1d1d21; }
+  .nav b { font-size:17px; letter-spacing:-.02em; }
+  .nav .steps { display:flex; gap:16px; font-size:13px; color:#6d6d76; }
+  .nav .steps span.on { color:#f2f2f4; }
+  .nav .cta { margin-left:auto; background:#fff; color:#0b0b0d; border:0; padding:7px 16px; border-radius:7px; font-weight:600; font-size:13px; }
+
+  /* entry */
+  .entry { height: calc(100vh - 52px); display:flex; align-items:center; justify-content:center; }
+  .entry-inner { width: 420px; }
+  .entry h1 { font-size:26px; margin:0 0 8px; letter-spacing:-.02em; }
+  .entry p { color:#8f8f98; margin:0 0 26px; font-size:14px; }
+  .entry label { font-size:11px; letter-spacing:.1em; color:#6d6d76; text-transform:uppercase; }
+  .entry input {
+    width:100%; margin-top:8px; padding:14px 16px; border-radius:10px; border:1px solid #26262c;
+    background:#141418; color:#f2f2f4; font:700 26px ui-monospace,SFMono-Regular,Menlo,monospace;
+    letter-spacing:.3em; text-transform:uppercase; outline:none;
+  }
+  .entry input:focus { border-color:#5a5a66; }
+  .entry button.go { width:100%; margin-top:14px; padding:13px; border:0; border-radius:10px; background:#fff; color:#0b0b0d; font-weight:600; font-size:15px; }
+  .err { margin-top:14px; background:#3a1113; color:#ffb3b6; border-radius:9px; padding:11px 14px; font-size:13px; }
+
+  /* room */
+  .room { height: calc(100vh - 52px); display:grid; grid-template-columns: 1fr 330px; }
+  .canvas { padding:22px; min-width:0; display:flex; flex-direction:column; }
+  .canvas .paper { flex:1; background:#f7f7f4; border-radius:12px; overflow:hidden; min-height:0; }
+  .canvas svg { width:100%; height:100%; display:block; }
+  .side { border-left:1px solid #1d1d21; padding:22px; overflow:auto; }
+  .side h2 { font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:#6d6d76; margin:0 0 12px; font-weight:600; }
+  .side h2:not(:first-child) { margin-top:26px; }
+  .kv { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #16161a; font-size:13px; }
+  .kv span { color:#8f8f98; }
+  .fx { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #16161a; font-size:13px; }
+  .pip { width:22px; height:22px; border-radius:50%; display:grid; place-items:center; font-size:10px; font-weight:700; flex:none; }
+  .pip.det { background:#f2f2f4; color:#0b0b0d; }
+  .pip.man { background:transparent; color:#f2f2f4; border:1.5px solid #f2f2f4; }
+  .fx small { color:#6d6d76; margin-left:auto; font-variant-numeric:tabular-nums; }
+  .note { margin-top:16px; font-size:12px; color:#6d6d76; line-height:1.6; }
+  .ok { color:#4ec77e; }
+</style>
+</head>
+<body>
+<div class="nav">
+  <b>MOZU</b>
+  <div class="steps">
+    <span class="on" id="s1">1 Room</span><span>2 Layout</span><span>3 Modules</span><span>4 Style</span><span>5 Review</span>
+  </div>
+  <button class="cta">Next</button>
+</div>
+
+<!-- someone arriving with a code -->
+<div class="entry" id="entry">
+  <div class="entry-inner">
+    <h1>Open your scanned room</h1>
+    <p>Scan a room in the MOZU app, tap <strong>Send to MOZU web</strong>, and enter the code it gives you.</p>
+    <label for="code">Handoff code</label>
+    <input id="code" placeholder="B7K4M2" autocomplete="off" spellcheck="false">
+    <button class="go" id="go">Open room</button>
+    <div class="err" id="err" style="display:none"></div>
+  </div>
+</div>
+
+<!-- the room, once it has arrived -->
+<div class="room" id="room" style="display:none">
+  <div class="canvas"><div class="paper"><svg id="plan"></svg></div></div>
+  <aside class="side">
+    <h2>Your room</h2>
+    <div id="facts"></div>
+    <h2>On the walls</h2>
+    <div id="fixtures"></div>
+    <div class="note" id="note"></div>
+  </aside>
+</div>
+
+<script src="/demo/plan.js"></script>
+<script>
+const LABEL = { socket:'Socket', switch:'Switch', water:'Water', waste:'Waste', gas:'Gas', vent:'Vent', radiator:'Radiator' };
+const GLYPH = { socket:'S', switch:'L', water:'W', waste:'D', gas:'G', vent:'V', radiator:'R' };
+
+function area(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) { const q = pts[(i+1)%pts.length]; a += pts[i].x*q.z - q.x*pts[i].z; }
+  return Math.abs(a/2) / 1e6;
+}
+function perimeter(pts) {
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) { const q = pts[(i+1)%pts.length]; s += Math.hypot(q.x-pts[i].x, q.z-pts[i].z); }
+  return s / 1000;
+}
+
+function render(scan) {
+  document.getElementById('entry').style.display = 'none';
+  document.getElementById('room').style.display = 'grid';
+  drawRoomPlan(document.getElementById('plan'), scan);
+
+  const facts = [
+    ['Area', area(scan.polygon).toFixed(1) + ' m²'],
+    ['Perimeter', perimeter(scan.polygon).toFixed(2) + ' m'],
+    ['Ceiling', (scan.height/1000).toFixed(2) + ' m'],
+    ['Walls', String(scan.polygon.length)],
+    ['Openings', String((scan.openings ?? []).length)],
+    ['Measured by', scan.source === 'roomplan' ? 'iPad LiDAR (RoomPlan)' : scan.source],
+  ];
+  document.getElementById('facts').innerHTML = facts
+    .map(([k, v]) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('');
+
+  document.getElementById('fixtures').innerHTML = (scan.fixtures ?? []).map((f) => {
+    const detected = f.source === 'detected';
+    const name = (LABEL[f.type] ?? f.type) + (f.diameterMm ? ` ⌀${f.diameterMm}` : '');
+    return `<div class="fx">
+      <div class="pip ${detected ? 'det' : 'man'}">${GLYPH[f.type] ?? '?'}</div>
+      <div>${name}<br><span style="color:#6d6d76;font-size:11px">wall ${f.wall+1} · ${detected ? 'detected' : 'placed by hand'}</span></div>
+      <small>${f.height} mm</small>
+    </div>`;
+  }).join('');
+
+  const n = (scan.fixtures ?? []).length;
+  document.getElementById('note').innerHTML =
+    `<span class="ok">✓</span> ${n} fixtures carried across with the room. Layout will flag any module that seals one.`;
+}
+
+async function open_(raw) {
+  const code = String(raw).toUpperCase().replace(/[\s-]/g, '');
+  const err = document.getElementById('err');
+  err.style.display = 'none';
+  try {
+    const res = await fetch('/api/scan-handoff?code=' + encodeURIComponent(code));
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      err.textContent = (body && body.error) || 'That code did not match a room.';
+      err.style.display = 'block';
+      return;
+    }
+    const { scan } = await res.json();
+    window.__received = scan;
+    render(scan);
+  } catch {
+    err.textContent = 'Could not reach MOZU.';
+    err.style.display = 'block';
+  }
+}
+
+document.getElementById('go').addEventListener('click', () => open_(document.getElementById('code').value));
+document.getElementById('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') open_(e.target.value); });
+
+// A code in the address bar opens straight through.
+const fromUrl = new URLSearchParams(location.search).get('code');
+if (fromUrl) open_(fromUrl);
+</script>
+</body>
+</html>

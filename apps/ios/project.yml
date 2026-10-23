@@ -1,0 +1,79 @@
+# XcodeGen spec for the MOZU Scanner iOS app.
+# Generates MozuScanner.xcodeproj with every Swift source compiled and the
+# Textures + Models bundled as loose resources (the way the code loads them).
+#
+#   brew install xcodegen
+#   cd apps/ios
+#   xcodegen generate
+#   open MozuScanner.xcodeproj
+#
+# Then set your signing Team in the target's Signing & Capabilities and run on
+# an iPad (a LiDAR iPad Pro is required only for the RoomPlan scan step).
+
+name: MozuScanner
+options:
+  bundleIdPrefix: com.mozu
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Set your free/paid Apple Developer team here (or in the Xcode UI):
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  MozuScanner:
+    type: application
+    platform: iOS
+    sources:
+      # All Swift sources (skip docs); Resources added separately as a resource phase.
+      - path: MozuScanner
+        excludes:
+          - "**/*.md"
+          - "Info.plist"
+          - "Resources/**"
+      - path: MozuScanner/Resources
+        buildPhase: resources
+        excludes:
+          - "Studio.skybox"
+          - "Studio.skybox/**"
+      # The .skybox folder must be a SINGLE file reference (not recursed into) so
+      # Xcode's RealityKit environment build rule compiles it to a .realityenv that
+      # `EnvironmentResource.load(named: "Studio")` can read for image-based lighting.
+      - path: MozuScanner/Resources/Studio.skybox
+        type: file
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mozu.scanner
+        INFOPLIST_FILE: MozuScanner/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+    # RealityKit / ARKit / RoomPlan are system frameworks; auto-linked from imports.
+
+schemes:
+  MozuScanner:
+    build:
+      targets:
+        MozuScanner: all
+    run:
+      config: Debug
+      # iPadOS 26's RealityKit has a bug where RoomCaptureView's AR passthrough binds
+      # a 2D texture where its `tonemapLUT` shader now expects a 1D one. It's harmless
+      # at runtime, but Metal API Validation (ON by default for debug Run from Xcode)
+      # turns it into a hard abort on the render thread the moment scanning starts.
+      # Turning validation off for Run lets on-device scanning work. Release /
+      # TestFlight / App Store builds never enable validation, so this is debug-only.
+      enableGPUValidationMode: false
+      enableGPUFrameCaptureMode: disabled
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- App target Info.plist. Because the XcodeGen spec sets
+     GENERATE_INFOPLIST_FILE: NO, Xcode injects NOTHING and copies this file
+     verbatim into the bundle (after $(...) build-setting substitution). It must
+     therefore contain every required key itself — most importantly
+     CFBundleIdentifier / CFBundleExecutable, without which the built .app is not
+     a valid, installable bundle. The $(...) values resolve from the build
+     settings defined in apps/ios/project.yml. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>MOZU Scanner</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>MOZU uses the camera and LiDAR to scan your room and measure it for the configurator.</string>
+	<!-- iOS 26 tightened ARKit world-sensing privacy: RoomPlan's world tracking +
+	     scene reconstruction wants this usage string in addition to the camera one. -->
+	<key>NSWorldSensingUsageDescription</key>
+	<string>MOZU senses your surroundings with LiDAR to measure your room's walls, doors and windows for the configurator.</string>
+	<!-- Allow plain HTTP to a machine on the same network, so the app can talk to
+	     a MOZU server running on a laptop (http://192.168.x.x:3000) during a
+	     survey or a demo. This is the narrow exception Apple provides for exactly
+	     this case: it permits .local and private-range addresses only, and leaves
+	     App Transport Security fully in force for the public internet. A public
+	     MOZU deployment is HTTPS and needs none of this. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- iOS 14+ requires a reason before an app may talk to devices on the local
+	     network at all; without it the first request silently fails. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MOZU sends your scanned room to the MOZU server running on your computer.</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<!-- iPad supports multitasking, so it must offer all four orientations
+	     (otherwise Xcode warns "All interface orientations must be supported
+	     unless the app requires full screen"). The AR / RoomPlan / 3D views all
+	     work in any orientation, so we allow the full set on iPad. -->
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>

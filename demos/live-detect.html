@@ -1,0 +1,758 @@
+<title>MOZU — Socket &amp; Pipe Detection (live camera)</title>
+<style>
+  :root{
+    --paper:#F1EBE1;--panel:#FBF8F2;--ink:#171717;--ink2:#6B6459;--line:#D8D4CC;
+    --orange:#FF4F32;--ok:#2E7D52;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  .app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+  .top{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);border-bottom:1.5px solid var(--ink);flex-shrink:0}
+  .brand{font-family:var(--mono);font-weight:700;letter-spacing:.26em;font-size:14px}
+  .brand b{color:var(--orange)}
+  .kbd{font-family:var(--mono);font-size:11px;color:var(--ink2)}
+  .main{display:flex;flex:1;min-height:0}
+  .stage{flex:1;min-width:0;position:relative;background:#0d0d0d;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  #view{max-width:100%;max-height:100%;display:block}
+  video{display:none}
+  .hint{position:absolute;bottom:10px;left:10px;right:10px;text-align:center;font-family:var(--mono);font-size:11px;color:#efe9df;background:rgba(0,0,0,.5);padding:7px 10px;border-radius:8px;pointer-events:none;line-height:1.4}
+  .side{width:310px;flex-shrink:0;background:var(--panel);border-left:1.5px solid var(--ink);display:flex;flex-direction:column;min-height:0}
+  .scroll{overflow-y:auto;padding:14px;flex:1;-webkit-overflow-scrolling:touch}
+  h2{font-size:16px;margin-bottom:4px}
+  .sub{font-size:12px;color:var(--ink2);line-height:1.5;margin-bottom:12px}
+  button.btn,label.btn{font-family:var(--sans);font-size:13.5px;font-weight:600;border:1px solid var(--ink);background:var(--ink);color:var(--paper);border-radius:10px;padding:12px 14px;cursor:pointer;width:100%;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px}
+  button.btn.ghost,label.btn.ghost{background:var(--paper);color:var(--ink)}
+  button.btn.orange{background:var(--orange);border-color:var(--orange);color:#fff}
+  .stat{display:flex;gap:8px;margin:10px 0}
+  .stat .b{flex:1;border:1px solid var(--line);border-radius:10px;background:var(--paper);padding:8px;text-align:center}
+  .stat .v{font-family:var(--mono);font-size:20px;font-weight:600}
+  .stat .k{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2)}
+  .ey{font-family:var(--mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink2);margin:14px 0 6px}
+  .row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);margin:8px 0}
+  input[type=range]{flex:1;accent-color:var(--orange)}
+  .det{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);padding:7px 0;font-size:12px;font-family:var(--mono)}
+  .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+  .dot.s{background:#D99A16}.dot.p{background:#2F6FBF}
+  .note{font-size:11px;color:var(--ink2);line-height:1.5;border-left:3px solid var(--orange);padding-left:9px;margin-top:12px}
+  @media (max-width:860px){
+    .main{flex-direction:column}
+    .side{width:100%;border-left:none;border-top:1.5px solid var(--ink);max-height:44vh}
+    .stage{min-height:42vh}
+  }
+</style>
+
+<div class="app">
+  <div class="top">
+    <div class="brand">M<b>O</b>ZU</div>
+    <span class="kbd">live socket &amp; pipe detection</span>
+  </div>
+  <div class="main">
+    <div class="stage">
+      <video id="cam" playsinline muted autoplay></video>
+      <canvas id="view" width="960" height="640"></canvas>
+      <div class="hint" id="hint">Tap “Start camera”, then point at a wall socket.</div>
+    </div>
+    <div class="side">
+      <div class="scroll">
+        <h2>Point at a socket</h2>
+        <p class="sub">This runs the <b>exact detector compiled from the app source</b> — the same code the scan uses, not a copy.</p>
+        <button class="btn orange" id="camBtn">Start camera</button>
+        <label class="btn ghost" for="file">Use a photo instead</label>
+        <input id="file" type="file" accept="image/*" style="display:none">
+        <button class="btn ghost" id="sampleBtn">Try a sample wall</button>
+
+        <div class="stat">
+          <div class="b"><div class="v" id="nsock">0</div><div class="k">Sockets</div></div>
+          <div class="b"><div class="v" id="npipe">0</div><div class="k">Pipes</div></div>
+          <div class="b"><div class="v" id="fps">–</div><div class="k">Scan/s</div></div>
+        </div>
+
+        <div class="ey">Sensitivity</div>
+        <div class="row"><span>Loose</span><input id="sens" type="range" min="20" max="70" value="35"><span>Strict</span></div>
+
+        <div class="ey">In view</div>
+        <div id="list"><div class="sub">Nothing yet.</div></div>
+
+        <p class="note">Sockets are found by their cluster of dark pin slots; pipes by a long run of near-constant width. Pipe <i>diameter</i> (and so water/gas/waste) needs the LiDAR distance to the wall, which a plain browser camera does not have — that part is exercised by the app’s tests, not here.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>var MOZU = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // ../../../tmp/mozu-demo-krYo8F/entry.ts
+  var entry_exports = {};
+  __export(entry_exports, {
+    detectPipes: () => detectPipes,
+    detectSockets: () => detectSockets
+  });
+
+  // src/systems/scan/fixtureDetector.ts
+  var BRIGHT_DELTA = 8;
+  var STRONG_CONTRAST = 12;
+  var WEAK_MIN_FEATURES = 2;
+  var BLANK_MIN_CONTRAST = 20;
+  var BLANK_MIN_SOLIDITY = 0.78;
+  var BLANK_MAX_SIDE_FRAC = 0.28;
+  var BLANK_MIN_ASPECT = 0.5;
+  var BLANK_MAX_ASPECT = 2;
+  var WALL_WINDOW = 0.3;
+  var MIN_PLATE_SIDE_FRAC = 0.02;
+  var MAX_PLATE_SIDE_FRAC = 0.42;
+  var MIN_ASPECT = 0.33;
+  var MAX_ASPECT = 2.6;
+  var MIN_SOLIDITY = 0.62;
+  var DARK_FEATURE_DELTA = 28;
+  var MIN_FEATURE_AREA = 2;
+  var MAX_FEATURES = 24;
+  var MAX_DARK_FRACTION = 0.3;
+  function toGrayscale(img, maxDim) {
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+    const g = new Float32Array(w * h);
+    const d = img.data;
+    const luma = (i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    if (scale >= 1) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          g[y * w + x] = luma((y * img.width + x) * 4);
+        }
+      }
+      return { g, w, h };
+    }
+    const stepX = img.width / w;
+    const stepY = img.height / h;
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.min(img.height - 1, Math.floor(y * stepY));
+      const y1 = Math.min(img.height, Math.max(y0 + 1, Math.floor((y + 1) * stepY)));
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.min(img.width - 1, Math.floor(x * stepX));
+        const x1 = Math.min(img.width, Math.max(x0 + 1, Math.floor((x + 1) * stepX)));
+        let darkest = 255;
+        for (let sy = y0; sy < y1; sy++) {
+          for (let sx = x0; sx < x1; sx++) {
+            const v = luma((sy * img.width + sx) * 4);
+            if (v < darkest) darkest = v;
+          }
+        }
+        g[y * w + x] = darkest;
+      }
+    }
+    return { g, w, h };
+  }
+  function integral(g, w, h) {
+    const s = new Float64Array((w + 1) * (h + 1));
+    for (let y = 1; y <= h; y++) {
+      let row = 0;
+      for (let x = 1; x <= w; x++) {
+        row += g[(y - 1) * w + (x - 1)];
+        s[y * (w + 1) + x] = s[(y - 1) * (w + 1) + x] + row;
+      }
+    }
+    return s;
+  }
+  function boxMean(s, w, h, x, y, r) {
+    const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r);
+    const x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
+    const W = w + 1;
+    const sum = s[y1 * W + x1] - s[y0 * W + x1] - s[y1 * W + x0] + s[y0 * W + x0];
+    const n = (x1 - x0) * (y1 - y0);
+    return n > 0 ? sum / n : 0;
+  }
+  function components(mask, w, h) {
+    const label = new Int32Array(w * h).fill(0);
+    const blobs = [];
+    const stack = [];
+    let next = 0;
+    for (let i = 0; i < w * h; i++) {
+      if (!mask[i] || label[i]) continue;
+      next++;
+      stack.length = 0;
+      stack.push(i);
+      label[i] = next;
+      let minx = w, miny = h, maxx = 0, maxy = 0, area = 0, sx = 0, sy = 0;
+      while (stack.length) {
+        const p = stack.pop();
+        const px = p % w, py = p / w | 0;
+        area++;
+        sx += px;
+        sy += py;
+        if (px < minx) minx = px;
+        if (px > maxx) maxx = px;
+        if (py < miny) miny = py;
+        if (py > maxy) maxy = py;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nx = px + dx, ny = py + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const q = ny * w + nx;
+            if (mask[q] && !label[q]) {
+              label[q] = next;
+              stack.push(q);
+            }
+          }
+        }
+      }
+      blobs.push({ minx, miny, maxx, maxy, area, cx: sx / area, cy: sy / area });
+    }
+    return blobs;
+  }
+  var iou = (a, b) => {
+    const ax0 = a.cx - a.w / 2, ay0 = a.cy - a.h / 2, ax1 = a.cx + a.w / 2, ay1 = a.cy + a.h / 2;
+    const bx0 = b.cx - b.w / 2, by0 = b.cy - b.h / 2, bx1 = b.cx + b.w / 2, by1 = b.cy + b.h / 2;
+    const ix = Math.max(0, Math.min(ax1, bx1) - Math.max(ax0, bx0));
+    const iy = Math.max(0, Math.min(ay1, by1) - Math.max(ay0, by0));
+    const inter = ix * iy;
+    const uni = a.w * a.h + b.w * b.h - inter;
+    return uni > 0 ? inter / uni : 0;
+  };
+  function rectMean(s, w, x0, y0, x1, y1) {
+    const W = w + 1;
+    const sum = s[y1 * W + x1] - s[y0 * W + x1] - s[y1 * W + x0] + s[y0 * W + x0];
+    const n = (x1 - x0) * (y1 - y0);
+    return n > 0 ? sum / n : 0;
+  }
+  function darkFeatures(g, w, x0, y0, x1, y1, threshold) {
+    const bw = x1 - x0, bh = y1 - y0;
+    if (bw <= 0 || bh <= 0) return { blobs: 0, darkFraction: 0 };
+    const mask = new Uint8Array(bw * bh);
+    let dark = 0;
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        if (g[(y0 + y) * w + (x0 + x)] < threshold) {
+          mask[y * bw + x] = 1;
+          dark++;
+        }
+      }
+    }
+    let blobs = 0;
+    const seen = new Uint8Array(bw * bh);
+    const stack = [];
+    for (let i = 0; i < bw * bh; i++) {
+      if (!mask[i] || seen[i]) continue;
+      let area = 0;
+      stack.length = 0;
+      stack.push(i);
+      seen[i] = 1;
+      while (stack.length) {
+        const q = stack.pop();
+        area++;
+        const qx = q % bw, qy = q / bw | 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nx = qx + dx, ny = qy + dy;
+            if (nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+            const r = ny * bw + nx;
+            if (mask[r] && !seen[r]) {
+              seen[r] = 1;
+              stack.push(r);
+            }
+          }
+        }
+      }
+      if (area >= MIN_FEATURE_AREA) blobs++;
+    }
+    return { blobs, darkFraction: dark / (bw * bh) };
+  }
+  function detectSockets(img, opts = {}) {
+    var _a, _b;
+    const maxDim = (_a = opts.maxDim) != null ? _a : 256;
+    const minScore = (_b = opts.minScore) != null ? _b : 0.35;
+    const { g, w, h } = toGrayscale(img, maxDim);
+    if (w < 16 || h < 16) return [];
+    const s = integral(g, w, h);
+    const minDim = Math.min(w, h);
+    const rWall = Math.max(8, Math.round(minDim * WALL_WINDOW));
+    const bright = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (g[i] > boxMean(s, w, h, x, y, rWall) + BRIGHT_DELTA) bright[i] = 1;
+      }
+    }
+    const minSide = Math.max(6, Math.round(minDim * MIN_PLATE_SIDE_FRAC));
+    const maxSide = Math.round(minDim * MAX_PLATE_SIDE_FRAC);
+    const dets = [];
+    for (const p of components(bright, w, h)) {
+      const bw = p.maxx - p.minx + 1;
+      const bh = p.maxy - p.miny + 1;
+      if (Math.min(bw, bh) < minSide || Math.max(bw, bh) > maxSide) continue;
+      if (p.minx === 0 || p.miny === 0 || p.maxx === w - 1 || p.maxy === h - 1) continue;
+      const aspect = bw / bh;
+      if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) continue;
+      const solidity = p.area / (bw * bh);
+      if (solidity < MIN_SOLIDITY) continue;
+      const plateMean = rectMean(s, w, p.minx, p.miny, p.maxx + 1, p.maxy + 1);
+      const cx = Math.round((p.minx + p.maxx) / 2);
+      const cy = Math.round((p.miny + p.maxy) / 2);
+      const wallMean = boxMean(s, w, h, cx, cy, Math.max(bw, bh) * 2);
+      const contrast = plateMean - wallMean;
+      const insetX = Math.max(1, Math.round(bw * 0.08));
+      const insetY = Math.max(1, Math.round(bh * 0.08));
+      const feats = darkFeatures(
+        g,
+        w,
+        p.minx + insetX,
+        p.miny + insetY,
+        p.maxx + 1 - insetX,
+        p.maxy + 1 - insetY,
+        plateMean - DARK_FEATURE_DELTA
+      );
+      if (feats.blobs > MAX_FEATURES) continue;
+      if (feats.darkFraction > MAX_DARK_FRACTION) continue;
+      if (feats.blobs === 0) {
+        if (contrast < BLANK_MIN_CONTRAST) continue;
+        if (solidity < BLANK_MIN_SOLIDITY) continue;
+        if (aspect < BLANK_MIN_ASPECT || aspect > BLANK_MAX_ASPECT) continue;
+        if (Math.max(bw, bh) > minDim * BLANK_MAX_SIDE_FRAC) continue;
+      } else if (contrast < STRONG_CONTRAST && feats.blobs < WEAK_MIN_FEATURES) {
+        continue;
+      }
+      const aspectFit = aspect >= 0.45 && aspect <= 2.2 ? 1 : 0.4;
+      const score = 0.4 * Math.min(1, solidity) + 0.2 * aspectFit + 0.2 * Math.min(1, Math.max(0, contrast) / 30) + 0.2 * Math.min(1, feats.blobs / 2);
+      dets.push({
+        cx: (p.minx + bw / 2) / w,
+        cy: (p.miny + bh / 2) / h,
+        w: bw / w,
+        h: bh / h,
+        score,
+        holes: feats.blobs
+      });
+    }
+    dets.sort((a, b) => b.score - a.score);
+    const kept = [];
+    for (const d of dets) {
+      if (d.score < minScore) continue;
+      if (kept.some((k) => iou(k, d) > 0.3)) continue;
+      kept.push(d);
+    }
+    return kept;
+  }
+
+  // src/systems/scan/pipeDetector.ts
+  var MIN_BORE_PX = 3;
+  function prepare(img, maxDim) {
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+    const g = new Float32Array(w * h);
+    const r = new Float32Array(w * h);
+    const gr = new Float32Array(w * h);
+    const b = new Float32Array(w * h);
+    const d = img.data;
+    for (let y = 0; y < h; y++) {
+      const sy = Math.min(img.height - 1, Math.floor(y / scale));
+      for (let x = 0; x < w; x++) {
+        const sx = Math.min(img.width - 1, Math.floor(x / scale));
+        const i = (sy * img.width + sx) * 4;
+        const R = d[i], G = d[i + 1], B = d[i + 2];
+        const k = y * w + x;
+        r[k] = R;
+        gr[k] = G;
+        b[k] = B;
+        g[k] = 0.299 * R + 0.587 * G + 0.114 * B;
+      }
+    }
+    return { g, r, gr, b, w, h, scale };
+  }
+  function integral2(g, w, h) {
+    const s = new Float64Array((w + 1) * (h + 1));
+    for (let y = 1; y <= h; y++) {
+      let row = 0;
+      for (let x = 1; x <= w; x++) {
+        row += g[(y - 1) * w + (x - 1)];
+        s[y * (w + 1) + x] = s[(y - 1) * (w + 1) + x] + row;
+      }
+    }
+    return s;
+  }
+  function boxSum(s, w, x, y, r, h) {
+    const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r);
+    const x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
+    const W = w + 1;
+    return s[y1 * W + x1] - s[y0 * W + x1] - s[y1 * W + x0] + s[y0 * W + x0];
+  }
+  function boxCount(w, h, x, y, r) {
+    const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r);
+    const x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
+    return (x1 - x0) * (y1 - y0);
+  }
+  function boxMean2(s, w, h, x, y, r) {
+    const n = boxCount(w, h, x, y, r);
+    return n > 0 ? boxSum(s, w, x, y, r, h) / n : 0;
+  }
+  function backgroundExcludingOutliers(channels, g, w, h, rad, delta) {
+    const flat = integral2(g, w, h);
+    const rough = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (Math.abs(g[i] - boxMean2(flat, w, h, x, y, rad)) > delta) rough[i] = 1;
+      }
+    }
+    const keptMask = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) if (!rough[i]) keptMask[i] = 1;
+    const sCount = integral2(keptMask, w, h);
+    const MIN_CLEAN = 24;
+    const radii = [rad, rad * 2, rad * 4];
+    return channels.map((ch) => {
+      const kept = new Float32Array(w * h);
+      for (let i = 0; i < w * h; i++) if (!rough[i]) kept[i] = ch[i];
+      const sKept = integral2(kept, w, h);
+      const totalClean = sCount[(h + 1) * (w + 1) - 1];
+      const globalClean = totalClean > 0 ? sKept[(h + 1) * (w + 1) - 1] / totalClean : boxMean2(integral2(ch, w, h), w, h, w / 2 | 0, h / 2 | 0, Math.max(w, h));
+      const bg = new Float32Array(w * h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          let value = globalClean;
+          for (const r of radii) {
+            const n = boxSum(sCount, w, x, y, r, h);
+            if (n >= MIN_CLEAN) {
+              value = boxSum(sKept, w, x, y, r, h) / n;
+              break;
+            }
+          }
+          bg[i] = value;
+        }
+      }
+      return bg;
+    });
+  }
+  function components2(mask, w, h, minArea) {
+    const seen = new Uint8Array(w * h);
+    const out = [];
+    const stack = [];
+    for (let i = 0; i < w * h; i++) {
+      if (!mask[i] || seen[i]) continue;
+      stack.length = 0;
+      stack.push(i);
+      seen[i] = 1;
+      const pixels = [];
+      while (stack.length) {
+        const p = stack.pop();
+        const px = p % w, py = p / w | 0;
+        pixels.push({ x: px, y: py });
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nx = px + dx, ny = py + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const q = ny * w + nx;
+            if (mask[q] && !seen[q]) {
+              seen[q] = 1;
+              stack.push(q);
+            }
+          }
+        }
+      }
+      if (pixels.length >= minArea) out.push(pixels);
+    }
+    return out;
+  }
+  function principalAxis(pixels) {
+    let cx = 0, cy = 0;
+    for (const p of pixels) {
+      cx += p.x;
+      cy += p.y;
+    }
+    cx /= pixels.length;
+    cy /= pixels.length;
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const p of pixels) {
+      const dx = p.x - cx, dy = p.y - cy;
+      sxx += dx * dx;
+      syy += dy * dy;
+      sxy += dx * dy;
+    }
+    sxx /= pixels.length;
+    syy /= pixels.length;
+    sxy /= pixels.length;
+    const tr = sxx + syy;
+    const det = sxx * syy - sxy * sxy;
+    const disc = Math.max(0, tr * tr / 4 - det);
+    const lambda = tr / 2 + Math.sqrt(disc);
+    let ux = sxy, uy = lambda - sxx;
+    if (Math.hypot(ux, uy) < 1e-9) {
+      ux = 1;
+      uy = 0;
+    }
+    const len = Math.hypot(ux, uy);
+    return { ux: ux / len, uy: uy / len, cx, cy };
+  }
+  function detectPipes(img, opts = {}) {
+    var _a, _b;
+    const maxDim = (_a = opts.maxDim) != null ? _a : 640;
+    const minScore = (_b = opts.minScore) != null ? _b : 0.4;
+    const { g, r, gr, b, w, h, scale } = prepare(img, maxDim);
+    if (w < 12 || h < 12) return [];
+    const rad = Math.max(4, Math.round(Math.min(w, h) * 0.06));
+    const delta = 10;
+    const [bgR, bgG, bgB] = backgroundExcludingOutliers([r, gr, b], g, w, h, rad, delta);
+    const mask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const d = Math.max(
+        Math.abs(r[i] - bgR[i]),
+        Math.abs(gr[i] - bgG[i]),
+        Math.abs(b[i] - bgB[i])
+      );
+      if (d > delta) mask[i] = 1;
+    }
+    const minLen = Math.max(10, Math.round(Math.min(w, h) * 0.18));
+    const comps = components2(mask, w, h, minLen * 2);
+    const dets = [];
+    for (const pixels of comps) {
+      const { ux, uy, cx, cy } = principalAxis(pixels);
+      let tMin = Infinity, tMax = -Infinity, nMin = Infinity, nMax = -Infinity;
+      for (const p of pixels) {
+        const dx = p.x - cx, dy = p.y - cy;
+        const t = dx * ux + dy * uy;
+        const n2 = -dx * uy + dy * ux;
+        if (t < tMin) tMin = t;
+        if (t > tMax) tMax = t;
+        if (n2 < nMin) nMin = n2;
+        if (n2 > nMax) nMax = n2;
+      }
+      const length = tMax - tMin;
+      const width = Math.max(1, nMax - nMin);
+      if (length < minLen) continue;
+      const elongation = length / width;
+      if (elongation < 4) continue;
+      if (width > Math.min(w, h) * 0.25) continue;
+      const STATIONS = 9;
+      const lo = new Array(STATIONS).fill(Infinity);
+      const hi = new Array(STATIONS).fill(-Infinity);
+      const count = new Array(STATIONS).fill(0);
+      for (const p of pixels) {
+        const dx = p.x - cx, dy = p.y - cy;
+        const t = dx * ux + dy * uy;
+        const n2 = -dx * uy + dy * ux;
+        let k = Math.floor((t - tMin) / (length || 1) * STATIONS);
+        if (k < 0) k = 0;
+        if (k >= STATIONS) k = STATIONS - 1;
+        if (n2 < lo[k]) lo[k] = n2;
+        if (n2 > hi[k]) hi[k] = n2;
+        count[k]++;
+      }
+      const widths = [];
+      let filled = 0;
+      for (let k = 0; k < STATIONS; k++) {
+        if (count[k] === 0) continue;
+        filled++;
+        widths.push(Math.max(1, hi[k] - lo[k]));
+      }
+      if (filled < STATIONS - 2) continue;
+      const mean = widths.reduce((a, c) => a + c, 0) / widths.length;
+      if (mean < MIN_BORE_PX) continue;
+      const varc = widths.reduce((a, c) => a + (c - mean) ** 2, 0) / widths.length;
+      const cv = Math.sqrt(varc) / (mean || 1);
+      if (cv > 0.28) continue;
+      const solidity = pixels.length / Math.max(1, length * mean);
+      if (solidity < 0.5) continue;
+      let sr = 0, sg = 0, sb = 0;
+      for (const p of pixels) {
+        const k = p.y * w + p.x;
+        sr += r[k];
+        sg += gr[k];
+        sb += b[k];
+      }
+      const n = pixels.length;
+      const yellowness = Math.max(0, Math.min(1, (Math.min(sr, sg) / n - sb / n) / 90));
+      const angle = Math.atan2(uy, ux);
+      const vertical = Math.abs(Math.sin(angle)) > Math.SQRT1_2;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of pixels) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const widthScore = 1 - Math.min(1, cv / 0.28);
+      const elongScore = Math.min(1, elongation / 12);
+      const score = 0.45 * widthScore + 0.35 * elongScore + 0.2 * Math.min(1, solidity);
+      dets.push({
+        cx: (minX + maxX) / 2 / w,
+        cy: (minY + maxY) / 2 / h,
+        w: (maxX - minX + 1) / w,
+        h: (maxY - minY + 1) / h,
+        score,
+        // Report the bore in ORIGINAL-image pixels so sizing is independent of
+        // the downscale factor used for analysis.
+        widthPx: mean / scale,
+        angle,
+        vertical,
+        yellowness,
+        elongation
+      });
+    }
+    dets.sort((a, b2) => b2.score - a.score);
+    const kept = [];
+    for (const d of dets) {
+      if (d.score < minScore) continue;
+      if (kept.some((k) => iou2(k, d) > 0.3)) continue;
+      kept.push(d);
+    }
+    return kept;
+  }
+  var iou2 = (a, b) => {
+    const ax0 = a.cx - a.w / 2, ay0 = a.cy - a.h / 2, ax1 = a.cx + a.w / 2, ay1 = a.cy + a.h / 2;
+    const bx0 = b.cx - b.w / 2, by0 = b.cy - b.h / 2, bx1 = b.cx + b.w / 2, by1 = b.cy + b.h / 2;
+    const ix = Math.max(0, Math.min(ax1, bx1) - Math.max(ax0, bx0));
+    const iy = Math.max(0, Math.min(ay1, by1) - Math.max(ay0, by0));
+    const inter = ix * iy;
+    const uni = a.w * a.h + b.w * b.h - inter;
+    return uni > 0 ? inter / uni : 0;
+  };
+  return __toCommonJS(entry_exports);
+})();
+</script>
+<script>
+"use strict";
+(function(){
+  var detectSockets = MOZU.detectSockets, detectPipes = MOZU.detectPipes;
+  var view=document.getElementById('view'), vctx=view.getContext('2d');
+  var cam=document.getElementById('cam'), hint=document.getElementById('hint');
+  var work=document.createElement('canvas'), wctx=work.getContext('2d',{willReadFrequently:true});
+  var nsock=document.getElementById('nsock'), npipe=document.getElementById('npipe');
+  var fpsEl=document.getElementById('fps'), listEl=document.getElementById('list'), sens=document.getElementById('sens');
+  var mode=null, running=false, sockets=[], pipes=[], lastScan=0, scans=0, scanT=performance.now();
+
+  function analyze(){
+    var AW=Math.min(640, view.width), AH=Math.round(view.height*AW/view.width);
+    if(AW<8||AH<8) return;
+    work.width=AW; work.height=AH; wctx.drawImage(view,0,0,AW,AH);
+    var img=wctx.getImageData(0,0,AW,AH);
+    var minScore=sens.value/100;
+    try{
+      sockets=detectSockets(img,{maxDim:640,minScore:minScore});
+      pipes=detectPipes(img,{maxDim:640,minScore:Math.max(0.35,minScore)});
+    }catch(e){ hint.textContent='Detector error: '+e.message; running=false; return; }
+    scans++;
+    var now=performance.now();
+    if(now-scanT>500){ fpsEl.textContent=(scans*1000/(now-scanT)).toFixed(0); scans=0; scanT=now; }
+    draw(); renderList();
+  }
+
+  function box(d,label,color){
+    var x=(d.cx-d.w/2)*view.width, y=(d.cy-d.h/2)*view.height,
+        w=d.w*view.width, h=d.h*view.height;
+    vctx.lineWidth=Math.max(2,view.width*0.004); vctx.strokeStyle=color;
+    vctx.strokeRect(x,y,w,h);
+    var fs=Math.max(12,view.width*0.019);
+    vctx.font='600 '+fs+'px -apple-system,system-ui,sans-serif';
+    var tw=vctx.measureText(label).width, pad=6, th=fs*1.5;
+    vctx.fillStyle=color; vctx.fillRect(x, Math.max(0,y-th), tw+pad*2, th);
+    vctx.fillStyle='#fff'; vctx.textBaseline='middle';
+    vctx.fillText(label, x+pad, Math.max(0,y-th)+th/2);
+  }
+  function draw(){
+    for(var i=0;i<sockets.length;i++) box(sockets[i],'SOCKET '+Math.round(sockets[i].score*100)+'%','#FF4F32');
+    for(var j=0;j<pipes.length;j++) box(pipes[j],(pipes[j].vertical?'PIPE ↕ ':'PIPE ↔ ')+Math.round(pipes[j].widthPx)+'px','#2F6FBF');
+    nsock.textContent=sockets.length; npipe.textContent=pipes.length;
+  }
+  function renderList(){
+    var h='';
+    for(var i=0;i<sockets.length;i++)
+      h+='<div class="det"><span class="dot s"></span>Socket '+(i+1)+' · '+Math.round(sockets[i].score*100)+'% · '+sockets[i].holes+' slots</div>';
+    for(var j=0;j<pipes.length;j++)
+      h+='<div class="det"><span class="dot p"></span>Pipe '+(j+1)+' · '+Math.round(pipes[j].widthPx)+'px wide · '+(pipes[j].vertical?'vertical':'horizontal')+'</div>';
+    listEl.innerHTML = h || '<div class="sub">Nothing in view.</div>';
+  }
+
+  function loop(){
+    if(!running) return;
+    if(mode==='camera' && cam.videoWidth){
+      view.width=cam.videoWidth; view.height=cam.videoHeight;
+      vctx.drawImage(cam,0,0,view.width,view.height);
+    }
+    var now=performance.now();
+    if(now-lastScan>160){ lastScan=now; analyze(); }
+    else if(mode==='camera'){ draw(); }
+    requestAnimationFrame(loop);
+  }
+
+  document.getElementById('camBtn').onclick=function(){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280}},audio:false})
+      .then(function(stream){
+        cam.srcObject=stream;
+        return cam.play();
+      })
+      .then(function(){
+        mode='camera'; running=true;
+        hint.textContent='Hold ~30–60cm from the socket, straight on, decent light.';
+        requestAnimationFrame(loop);
+      })
+      .catch(function(e){
+        hint.textContent='Camera blocked ('+e.name+'). On iOS this page must be served over HTTPS and you must allow camera access.';
+      });
+  };
+
+  document.getElementById('file').onchange=function(e){
+    var f=e.target.files[0]; if(!f) return;
+    var url=URL.createObjectURL(f), im=new Image();
+    im.onload=function(){
+      running=false; mode='photo';
+      view.width=im.naturalWidth; view.height=im.naturalHeight;
+      vctx.drawImage(im,0,0); analyze();
+      hint.textContent='Photo scanned. Drag Sensitivity if it missed something.';
+      URL.revokeObjectURL(url);
+    };
+    im.src=url;
+  };
+
+  function roundRect(x,y,w,h,r){vctx.beginPath();vctx.moveTo(x+r,y);vctx.arcTo(x+w,y,x+w,y+h,r);vctx.arcTo(x+w,y+h,x,y+h,r);vctx.arcTo(x,y+h,x,y,r);vctx.arcTo(x,y,x+w,y,r);vctx.closePath();}
+  function sampleWall(){
+    running=false; mode='sample'; view.width=960; view.height=640;
+    vctx.fillStyle='#d9d2c4'; vctx.fillRect(0,0,960,640);
+    for(var i=0;i<3000;i++){vctx.fillStyle='rgba(0,0,0,'+(Math.random()*0.03)+')';vctx.fillRect(Math.random()*960,Math.random()*640,2,2);}
+    outlet(260,300,1.7); outlet(600,310,1.7);
+    pipe(870,40,560,26);
+    analyze();
+    hint.textContent='Sample wall: two sockets + one pipe. Now try “Start camera”.';
+  }
+  function outlet(cx,cy,s){
+    var w=120*s,h=140*s;
+    vctx.fillStyle='#f4f0e8'; roundRect(cx-w/2,cy-h/2,w,h,10*s); vctx.fill();
+    vctx.strokeStyle='rgba(0,0,0,.12)'; vctx.lineWidth=1.5; roundRect(cx-w/2,cy-h/2,w,h,10*s); vctx.stroke();
+    [cx-28*s,cx+28*s].forEach(function(gx){
+      slot(gx-9*s,cy-8*s,5*s,16*s); slot(gx+9*s,cy-8*s,5*s,16*s); slot(gx,cy-26*s,5*s,14*s);
+    });
+  }
+  function pipe(cx,y0,len,wpx){
+    for(var y=y0;y<y0+len;y++)for(var d=-wpx/2;d<wpx/2;d++){
+      var k=1-Math.abs(d)/(wpx/2), sh=0.72+0.42*k;
+      vctx.fillStyle='rgb('+Math.round(95*sh)+','+Math.round(95*sh)+','+Math.round(100*sh)+')';
+      vctx.fillRect(Math.round(cx+d),y,1,1);
+    }
+  }
+  function slot(x,y,w,h){ vctx.fillStyle='#232019'; roundRect(x,y,w,h,2); vctx.fill(); }
+
+  document.getElementById('sampleBtn').onclick=sampleWall;
+  sens.oninput=function(){ if(mode==='sample'||mode==='photo') analyze(); };
+  sampleWall();
+})();
+</script>

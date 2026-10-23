@@ -1,0 +1,24 @@
+{
+  "name": "@mozu/scan-sdk",
+  "version": "0.1.0",
+  "description": "Phone scanning → floorplan SDK for MOZU: WebXR/RoomPlan/camera capture, dimensioned floorplan generation, and SVG rendering. Framework-agnostic.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./dist/*": "./dist/*"
+  },
+  "files": ["src", "dist", "README.md"],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "sideEffects": false,
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}

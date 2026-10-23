@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>MOZU Room Scanner</title>
+  </head>
+  <body class="popup">
+    <header>
+      <img src="icons/icon.svg" alt="" />
+      <div>
+        <h1 style="font-size: 15px">MOZU Room Scanner</h1>
+        <div class="muted" style="font-size: 12px">scan → floorplan</div>
+      </div>
+    </header>
+
+    <div class="stack">
+      <div class="card stack">
+        <div>
+          <span class="badge" id="cap">detecting…</span>
+        </div>
+        <button id="open-scanner">Open scanner</button>
+        <div class="muted" style="font-size: 12px">
+          Trace, camera-estimate, or AR (where supported) → a dimensioned plan.
+        </div>
+      </div>
+
+      <div class="card stack">
+        <h2 style="font-size: 13px">Quick floorplan</h2>
+        <div class="row">
+          <div>
+            <label>Width (mm)</label>
+            <input id="w" type="number" value="4000" min="500" step="50" />
+          </div>
+          <div>
+            <label>Depth (mm)</label>
+            <input id="d" type="number" value="3000" min="500" step="50" />
+          </div>
+        </div>
+        <div>
+          <label>Ceiling (mm)</label>
+          <input id="h" type="number" value="2700" min="2000" step="50" />
+        </div>
+        <div class="thumb" id="thumb"></div>
+        <button id="open-mozu" class="secondary">Open in MOZU →</button>
+      </div>
+
+      <div class="card stack">
+        <label for="base">MOZU web address (for hand-off)</label>
+        <input id="base" type="url" placeholder="https://app.mozu.example" />
+        <div class="muted" style="font-size: 11px">Saved on this browser.</div>
+      </div>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
