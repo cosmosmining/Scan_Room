@@ -153,10 +153,11 @@ export const materialKind = (id: MaterialKind) =>
 
 /**
  * Where the browser can fetch a swatch's bitmap. `scripts/sync-textures.mjs`
- * copies these out of the iOS bundle, so the URL exists iff the iPad has it.
+ * encodes these out of the iOS bundle as WebP, so the URL exists iff the iPad
+ * has the PNG.
  */
 export const swatchTextureUrl = (swatch: Swatch | undefined): string | null =>
-  swatch?.texture ? `/textures/${swatch.texture}.png` : null;
+  swatch?.texture ? `/textures/${swatch.texture}.webp` : null;
 
 /**
  * How much real-world surface one texture tile covers, in METRES.

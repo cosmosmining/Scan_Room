@@ -70,7 +70,7 @@ Requires Node 18.18 or newer.
 ```bash
 cd mozu-configurator
 npm install
-npm run build          # also copies the iPad's textures into public/textures
+npm run build          # also encodes the iPad's textures into public/textures (WebP)
 npm start              # http://localhost:3000
 ```
 

@@ -40,6 +40,7 @@
     "@types/react-dom": "^19.0.0",
     "@types/three": "^0.171.0",
     "occt-import-js": "^0.0.23",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.8"
