@@ -24,7 +24,11 @@ describe('AI auto-layout', () => {
     expect(ids).toContain('cooker-600');
     expect(ids).toContain('fridge-600');
     expect(ids).toContain('hood-600');
-    expect(ids.filter((id) => id === 'wall-600')).toHaveLength(3); // three overhead cabinets
+    // Three overhead cabinets over the cooking run (the recommended plan may
+    // add more over a second run).
+    const primaryWall = recommendation.modules[0].wallId;
+    const primary = recommendation.modules.filter((m) => m.wallId === primaryWall);
+    expect(defIds(primary).filter((id) => id === 'wall-600')).toHaveLength(3);
     expect(ids.filter((id) => id === 'drawer-base-600').length).toBeGreaterThanOrEqual(1);
   });
 

@@ -19,7 +19,7 @@ import {
   type RunAssignment,
 } from '@/systems/layout';
 import { roomGeometryToRoom } from '@/systems/scan';
-import { SCANNED_ITEM_ID } from '@/systems/furniture/catalog';
+import { SCANNED_ITEM_ID, columnObstacles } from '@/systems/furniture/catalog';
 import type { ModuleInstance } from '@/lib/types';
 import type { ConfigurationSlice, ConfiguratorState } from '@/state/types';
 
@@ -124,7 +124,11 @@ export const createConfigurationSlice: StateCreator<
       }),
     );
 
-    const result = generateLayout({ room, assignments });
+    const result = generateLayout({
+      room,
+      assignments,
+      obstacles: columnObstacles(get().designItems),
+    });
 
     // Hand-placed units become instances directly, at the transform they were
     // dragged to.

@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import type { LayoutType } from '@/lib/types';
 import { recommendLayouts, type LayoutRecommendation, type LayoutShape } from '@/systems/ai';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
+import { columnObstacles } from '@/systems/furniture/catalog';
 
 /**
  * Phase 2 surfaced: AI-generated layout suggestions — the "Kitchen Sets" with a
@@ -25,9 +26,13 @@ export function LayoutAdvisor() {
   const setLayoutType = useConfiguratorStore((s) => s.setLayoutType);
   const setStep = useConfiguratorStore((s) => s.setStep);
 
+  const designItems = useConfiguratorStore((s) => s.designItems);
+  // Plans are packed clear of the scanned columns, as the live layout is.
+  const obstacles = useMemo(() => columnObstacles(designItems), [designItems]);
+
   const recommendations = useMemo(
-    () => recommendLayouts(room, catalog, { domain }),
-    [room, catalog, domain],
+    () => recommendLayouts(room, catalog, { domain, obstacles }),
+    [room, catalog, domain, obstacles],
   );
 
   const apply = (rec: LayoutRecommendation) => {

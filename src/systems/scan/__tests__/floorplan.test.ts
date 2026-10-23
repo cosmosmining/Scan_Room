@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFloorplan,
+  floorplanCenter,
+  floorplanLabelPoint,
   floorplanToSvg,
   formatArea,
   formatLength,
@@ -170,5 +172,37 @@ describe('web adapter', () => {
     expect(Math.round(fp.areaMm2)).toBe(12_000_000);
     expect(fp.openings).toHaveLength(1);
     expect(fp.openings[0].wall).toBe(0);
+  });
+});
+
+describe('where the area label goes', () => {
+  it('in an L-shaped room, well inside the floor — not on the wall of its inside corner', () => {
+    const fp = buildFloorplan({
+      polygon: [
+        { x: 0, z: 0 }, { x: 6000, z: 0 }, { x: 6000, z: 2500 },
+        { x: 3000, z: 2500 }, { x: 3000, z: 5000 }, { x: 0, z: 5000 },
+      ],
+      height: 2650,
+      unitSystem: 'metric',
+    });
+    const c = floorplanCenter(fp);
+    const p = floorplanLabelPoint(fp);
+    // The corners' centre is 0.6 m from the inside corner (3000, 2500)…
+    expect(Math.hypot(c.x - 3000, c.z - 2500)).toBeLessThan(700);
+    // …the label point is inside the L, at least a metre from every wall.
+    const inL = p.x > 0 && p.z > 0 && (p.x < 3000 ? p.z < 5000 : p.x < 6000 && p.z < 2500);
+    expect(inL).toBe(true);
+    expect(Math.min(p.x, p.z, 6000 - p.x, 5000 - p.z, Math.max(3000 - p.x, 2500 - p.z))).toBeGreaterThan(1000);
+  });
+
+  it('in a plain rectangle, the middle', () => {
+    const fp = buildFloorplan({
+      polygon: [{ x: 0, z: 0 }, { x: 4000, z: 0 }, { x: 4000, z: 3000 }, { x: 0, z: 3000 }],
+      height: 2600,
+      unitSystem: 'metric',
+    });
+    const p = floorplanLabelPoint(fp);
+    expect(p.x).toBeCloseTo(2000, 0);
+    expect(p.z).toBeCloseTo(1500, 0);
   });
 });

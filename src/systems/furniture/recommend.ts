@@ -15,7 +15,8 @@
  * Millimetres throughout, as the rest of the web app is.
  */
 
-import type { Room, Vec3 } from '@/lib/types';
+import type { Room } from '@/lib/types';
+import { inwardNormal } from '@/systems/layout/geometry2d';
 import { FURNITURE_ITEMS, type FurnitureItem, type PlacedFurniture } from './catalog';
 
 export interface FurnitureRecommendation {
@@ -36,14 +37,6 @@ interface PrimaryRun {
   length: number;
 }
 
-const centroid = (poly: Vec3[]) =>
-  poly.length === 0
-    ? { x: 0, z: 0 }
-    : {
-        x: poly.reduce((a, p) => a + p.x, 0) / poly.length,
-        z: poly.reduce((a, p) => a + p.z, 0) / poly.length,
-      };
-
 /** The longest wall, with the geometry the layouts need. */
 function primaryRun(room: Room): PrimaryRun | null {
   let best: { wall: Room['walls'][number]; length: number } | null = null;
@@ -55,10 +48,9 @@ function primaryRun(room: Room): PrimaryRun | null {
 
   const { wall, length } = best;
   const along = { x: (wall.end.x - wall.start.x) / length, z: (wall.end.z - wall.start.z) / length };
-  const c = centroid(room.footprint);
-  const mid = { x: (wall.start.x + wall.end.x) / 2, z: (wall.start.z + wall.end.z) / 2 };
-  let inward = { x: -along.z, z: along.x };
-  if (inward.x * (c.x - mid.x) + inward.z * (c.z - mid.z) < 0) inward = { x: -inward.x, z: -inward.z };
+  // The room side of the wall — not "towards the centroid", which is the
+  // wrong side of some walls in an L-shaped room.
+  const inward = inwardNormal(wall.start, wall.end, room.footprint);
 
   return { start: { x: wall.start.x, z: wall.start.z }, along, inward, length };
 }

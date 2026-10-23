@@ -8,6 +8,7 @@ import {
   type Vec2,
 } from './geometry2d';
 import type {
+  Blocker,
   Interval,
   LayoutRules,
   Placement,
@@ -35,7 +36,7 @@ export function packRun(
   let cursor = run.usableStart;
 
   for (const module of modules) {
-    const offset = nextFreeOffset(cursor, module.width, run);
+    const offset = nextFreeOffset(cursor, module, run);
     if (offset === null) {
       unplaced.push(module);
       continue;
@@ -47,24 +48,48 @@ export function packRun(
   return { placements, unplaced };
 }
 
-/** First offset ≥ cursor where [offset, offset+width] fits and clears blocks. */
+/**
+ * Rounding slack when deciding whether a unit fits. A wall's length comes out
+ * of a rotation, so a 4400 mm wall can measure 4399.9999999 mm, and without
+ * this the last 600 mm cabinet on it was dropped as "does not fit".
+ */
+const FIT_TOLERANCE = 0.5;
+
+/**
+ * Whether a blocker stops this unit: one at its height, deep enough to reach
+ * it, and not built to connect to it. A blocker without the optional fields
+ * stops everything.
+ */
+export function blocks(b: Blocker, module: PlacementModule): boolean {
+  if (b.fixtureType && module.connectsUtilities?.includes(b.fixtureType)) return false;
+  if (b.fromWall !== undefined && module.depth <= b.fromWall) return false;
+  if (b.bottom === undefined && b.top === undefined) return true;
+  return bandsOverlap(yBand(module), {
+    start: b.bottom ?? Number.NEGATIVE_INFINITY,
+    end: b.top ?? Number.POSITIVE_INFINITY,
+  });
+}
+
+/** First offset ≥ cursor where the unit fits and clears whatever blocks it. */
 function nextFreeOffset(
   cursor: number,
-  width: number,
+  module: PlacementModule,
   run: WallRun,
 ): number | null {
+  const width = module.width;
+  const blockers = run.blocked.filter((b) => blocks(b, module));
   let candidate = Math.max(cursor, run.usableStart);
   let moved = true;
   while (moved) {
     moved = false;
-    for (const b of run.blocked) {
-      if (candidate < b.end && candidate + width > b.start) {
+    for (const b of blockers) {
+      if (candidate < b.end - FIT_TOLERANCE && candidate + width > b.start + FIT_TOLERANCE) {
         candidate = b.end;
         moved = true;
       }
     }
   }
-  return candidate + width > run.usableEnd ? null : candidate;
+  return candidate + width > run.usableEnd + FIT_TOLERANCE ? null : candidate;
 }
 
 /** Footprint centre of a placement in the floor plane. */

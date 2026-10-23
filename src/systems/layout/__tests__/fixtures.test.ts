@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { ModuleInstance } from '@/lib/types';
 import { createDefaultRoom } from '@/lib/defaults';
 import {
+  DEFAULT_RULES,
+  buildRuns,
+  detectFixtureConflicts,
   detectOpeningObstruction,
   generateLayout,
+  placementToInstance,
   type LayoutFixture,
   type Placement,
   type PlacementModule,
@@ -33,18 +37,34 @@ const socketAt = (offset: number, extra: Partial<LayoutFixture> = {}): LayoutFix
   ...extra,
 });
 
+/**
+ * A unit put somewhere by hand: the conflict report is for exactly this, now
+ * that the packer keeps generated units clear of fixtures in the first place.
+ */
+const handPlaced = (module: PlacementModule, offset: number, fixtures: LayoutFixture[]) => {
+  const run = buildRuns(createDefaultRoom(), ['wall_0'], DEFAULT_RULES).get('wall_0')!;
+  const placement: Placement = { module, run, offset };
+  return detectFixtureConflicts([placement], [placementToInstance(placement, 'i1')], fixtures, DEFAULT_RULES);
+};
+
 describe('fixture conflicts', () => {
-  it('blocks a base cabinet that seals a socket, and marks it invalid', () => {
-    const res = generateLayout({
-      room: createDefaultRoom(),
-      assignments: [{ wallId: 'wall_0', modules: [base('base', 600)] }],
-      fixtures: [socketAt(300)], // 300mm falls under the 0–600 cabinet
-    });
-    const blocked = res.violations.filter((v) => v.kind === 'fixture-blocked');
+  it('reports a base cabinet put by hand over a socket as sealing it', () => {
+    const vio = handPlaced(base('base', 600), 0, [socketAt(300)]); // 300mm falls under the 0–600 cabinet
+    const blocked = vio.filter((v) => v.kind === 'fixture-blocked');
     expect(blocked).toHaveLength(1);
     expect(blocked[0].severity).toBe('error');
     expect(blocked[0].fixtureId).toBe('f300');
-    expect(res.instances[0].valid).toBe(false);
+  });
+
+  it('packs a generated cabinet clear of the socket and its access gap instead', () => {
+    const res = generateLayout({
+      room: createDefaultRoom(),
+      assignments: [{ wallId: 'wall_0', modules: [base('base', 600)] }],
+      fixtures: [socketAt(300)],
+    });
+    expect(res.violations.filter((v) => v.kind.startsWith('fixture'))).toEqual([]);
+    expect(res.placements[0].offset).toBeGreaterThanOrEqual(300 + DEFAULT_RULES.fixtureClearance);
+    expect(res.instances[0].valid).toBe(true);
   });
 
   it('allows a sink base to sit over the water + waste it connects to', () => {
@@ -65,21 +85,22 @@ describe('fixture conflicts', () => {
   });
 
   it('still blocks a plain base cabinet over a water pipe', () => {
+    const water: LayoutFixture = { id: 'w', type: 'water', wallId: 'wall_0', offset: 300, height: 300 };
+    expect(handPlaced(base('base', 600), 0, [water]).filter((v) => v.kind === 'fixture-blocked')).toHaveLength(1);
+    // …and a generated one is packed past it, where a sink base would not be.
     const res = generateLayout({
       room: createDefaultRoom(),
       assignments: [{ wallId: 'wall_0', modules: [base('base', 600)] }],
-      fixtures: [{ id: 'w', type: 'water', wallId: 'wall_0', offset: 300, height: 300 }],
+      fixtures: [water],
     });
-    expect(res.violations.filter((v) => v.kind === 'fixture-blocked')).toHaveLength(1);
+    expect(res.placements[0].offset).toBeGreaterThanOrEqual(450);
   });
 
   it('warns when a unit crowds a socket without covering it', () => {
-    const res = generateLayout({
-      room: createDefaultRoom(),
-      assignments: [{ wallId: 'wall_0', modules: [base('base', 600)] }],
-      fixtures: [socketAt(700)], // 100mm past the unit → inside the 150mm access zone
-    });
-    const warn = res.violations.filter((v) => v.kind === 'fixture-clearance');
+    // 100mm past the unit → inside the 150mm access zone.
+    const warn = handPlaced(base('base', 600), 0, [socketAt(700)]).filter(
+      (v) => v.kind === 'fixture-clearance',
+    );
     expect(warn).toHaveLength(1);
     expect(warn[0].severity).toBe('warning');
   });
@@ -121,7 +142,9 @@ describe('fixture conflicts', () => {
       room,
       assignments: [{ wallId: 'wall_0', modules: [base('base', 600)] }],
     });
-    expect(res.violations.filter((v) => v.kind === 'fixture-blocked')).toHaveLength(1);
+    // Read from the walls, so packed clear of it.
+    expect(res.placements[0].offset).toBeGreaterThanOrEqual(450);
+    expect(res.violations.filter((v) => v.kind.startsWith('fixture'))).toEqual([]);
   });
 
   it('flags a floor unit standing across an opening (manual-placement guard)', () => {

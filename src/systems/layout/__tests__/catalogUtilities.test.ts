@@ -65,15 +65,20 @@ describe('real catalog units through the conflict engine', () => {
     expect(res.violations.filter((v) => v.kind === 'fixture-blocked')).toHaveLength(0);
   });
 
-  it('still blocks a plain catalog cabinet over the same pipework', () => {
+  it('keeps a plain catalog cabinet off the same pipework, where the sink may go', () => {
     const res = generateLayout({
       room: createDefaultRoom(),
       assignments: [{ wallId: 'wall_0', modules: [placement('base-600')] }],
       fixtures: [water(300)],
     });
-    const blocked = res.violations.filter((v) => v.kind === 'fixture-blocked');
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0].severity).toBe('error');
+    expect(res.violations.filter((v) => v.kind === 'fixture-blocked')).toEqual([]);
+    expect(res.placements[0].offset).toBeGreaterThanOrEqual(450);
+    const sink = generateLayout({
+      room: createDefaultRoom(),
+      assignments: [{ wallId: 'wall_0', modules: [placement('sink-base-800')] }],
+      fixtures: [water(300)],
+    });
+    expect(sink.placements[0].offset).toBe(0);
   });
 
   it('warns when the catalog oven has no socket in reach', () => {

@@ -12,6 +12,7 @@
 import type { RoomScan } from '@mozu/scan-sdk';
 import { floorplanSketchToRoomGeometry } from '@/systems/scan';
 import type { RoomGeometry, ScannerId } from '@/systems/scan';
+import { squareUp } from './squareUp';
 
 const SOURCE_TO_PROVIDER: Record<RoomScan['source'], ScannerId> = {
   roomplan: 'roomplan',
@@ -20,7 +21,9 @@ const SOURCE_TO_PROVIDER: Record<RoomScan['source'], ScannerId> = {
   manual: 'manual',
 };
 
-export function scanToGeometry(scan: RoomScan): RoomGeometry {
+export function scanToGeometry(received: RoomScan): RoomGeometry {
+  // Straight on the page, whichever way the iPad faced — see `squareUp`.
+  const scan = squareUp(received);
   const geometry = floorplanSketchToRoomGeometry({
     vertices: scan.polygon,
     height: scan.height,

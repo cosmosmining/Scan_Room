@@ -55,11 +55,22 @@ export function analyzeRuns(room: Room): RunGeom[] {
       run,
       wallId: wall.id,
       length: run.length,
-      usableLength: Math.max(0, run.usableEnd - run.usableStart),
+      // Whole millimetres: a 4400 mm wall turned to the angle it was scanned at
+      // measures 4399.9999999, and one cabinet fewer was composed for it.
+      usableLength: Math.max(0, Math.round(run.usableEnd - run.usableStart)),
       startsAtCorner: run.usableStart > DEFAULT_RULES.wallGap + CORNER_EPS,
     });
   }
-  return out.sort((a, b) => b.usableLength - a.usableLength);
+  // Compare whole millimetres and fall back to wall order. Two walls of the
+  // same length differ only by floating-point noise, and that noise changes
+  // with the angle the room was scanned at — so the same room, scanned facing
+  // a different way, used to be offered different kitchens.
+  const order = new Map(room.walls.map((w, i) => [w.id, i]));
+  return out.sort(
+    (a, b) =>
+      Math.round(b.usableLength) - Math.round(a.usableLength) ||
+      (order.get(a.wallId) ?? 0) - (order.get(b.wallId) ?? 0),
+  );
 }
 
 /** Two runs are adjacent when they share a wall endpoint (an inside corner). */
@@ -113,6 +124,9 @@ function toPlacement(
     height: def.dimensions.height,
     elevation: def.constraints.defaultElevation,
     frontClearance: def.constraints.frontClearance,
+    // Without these a suggested sink did not know it sits over its water.
+    connectsUtilities: def.constraints.connectsUtilities,
+    needsUtilities: def.constraints.needsUtilities,
   };
 }
 
@@ -261,7 +275,7 @@ function buildRecommendation(
 ): LayoutRecommendation {
   const composed = compose(intent.domain, shape, shapeRuns);
   const { assignments, planned } = assignmentsFor(catalog, shape, composed);
-  const request: LayoutRequest = { room, assignments };
+  const request: LayoutRequest = { room, assignments, obstacles: intent.obstacles };
   const result = generateLayout(request);
 
   const requested = planned.length || 1;

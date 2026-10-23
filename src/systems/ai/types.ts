@@ -1,5 +1,5 @@
 import type { Room } from '@/lib/types';
-import type { LayoutRequest, LayoutResult } from '@/systems/layout';
+import type { LayoutObstacle, LayoutRequest, LayoutResult } from '@/systems/layout';
 
 /**
  * AI-driven design system (Phase 2 of the MOZU pipeline): turn a captured room
@@ -21,6 +21,8 @@ export interface DesignIntent {
   domain: DesignDomain;
   /** Optional natural-language brief, e.g. "lots of drawers, no tall units". */
   brief?: string;
+  /** Columns the scan found; the plans are packed clear of them. */
+  obstacles?: LayoutObstacle[];
 }
 
 /** A wall the planner can pack along, with its post-reserve usable length. */
