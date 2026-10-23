@@ -16,7 +16,7 @@ concurrency:
 jobs:
   web:
     name: Web — typecheck, unit, golden scans, build, e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # ubuntu-latest became 26.04, which Playwright 1.56 and setup-swift do not support yet
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
 
   swift-parity:
     name: Swift ⇄ TypeScript parity (the iPad's geometry)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # ubuntu-latest became 26.04, which Playwright 1.56 and setup-swift do not support yet
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +85,7 @@ jobs:
   nightly-fuzz:
     name: Nightly — 45,000 badly scanned rooms
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # ubuntu-latest became 26.04, which Playwright 1.56 and setup-swift do not support yet
     timeout-minutes: 20
     strategy:
       matrix:
