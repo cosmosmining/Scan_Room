@@ -228,14 +228,24 @@ final class RoomCaptureController: ObservableObject {
 
     // MARK: Live glass and column count
 
+    /// Seconds between live glass and column counts.
+    private static let previewEvery: TimeInterval = 5
+    /// Readings the live count looks at; the finished scan uses all of them.
+    private static let previewSamples = 30_000
+
     /// Re-run the glass and column finders on the room so far, off the main
-    /// thread, every couple of seconds.
+    /// thread, every few seconds, on a thinned copy of the readings: the count
+    /// on screen does not need all of them, and running the finders over
+    /// 120,000 readings every two seconds kept the iPad busy and hot for the
+    /// whole scan — slow, and RoomPlan can stop on a hot device.
     private func refreshPreview(now: TimeInterval) {
-        guard !previewRunning, now - lastPreview >= 2, let room = latestRoom,
+        guard !previewRunning, now - lastPreview >= Self.previewEvery, let room = latestRoom,
               let input = FloorplanBuilder.previewInput(from: room) else { return }
         lastPreview = now
         previewRunning = true
-        let samples = fixtureCapture.rays
+        let all = fixtureCapture.rays
+        let step = max(1, all.count / Self.previewSamples)
+        let samples = step == 1 ? all : stride(from: 0, to: all.count, by: step).map { all[$0] }
         let generation = previewGeneration
         Task.detached(priority: .utility) { [weak self] in
             let result = FloorplanBuilder.preview(input, samples: samples)
@@ -385,17 +395,20 @@ final class RoomCaptureController: ObservableObject {
     }
 
     fileprivate func finish(with data: CapturedRoomData) {
+        let tracks = fixtureCapture.confirmed
+        let sightings = fixtureCapture.sightings
+        let rays = fixtureCapture.rays
         Task {
             do {
                 let room = try await builder.capturedRoom(from: data)
                 // The sockets were measured in world space while walking; this
-                // expresses them against the finished walls.
-                let scan = FloorplanBuilder.roomScan(
-                    from: room,
-                    tracks: fixtureCapture.confirmed,
-                    sightings: fixtureCapture.sightings,
-                    rays: fixtureCapture.rays
-                )
+                // expresses them against the finished walls. Off the main
+                // thread: the glass and column finders work through every
+                // reading of the walk, and on the main thread that froze the
+                // screen after "Done".
+                let scan = await Task.detached(priority: .userInitiated) {
+                    FloorplanBuilder.roomScan(from: room, tracks: tracks, sightings: sightings, rays: rays)
+                }.value
                 savedScans.append(scan)
                 phase = .roomSaved(count: savedScans.count)
             } catch {
