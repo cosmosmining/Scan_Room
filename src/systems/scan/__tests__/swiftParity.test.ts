@@ -78,7 +78,26 @@ function simCases(rnd: () => number) {
     }).map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
     const exclude: Footprint[] = k % 4 === 0 ? [{ center: { x: 1300, z: D - 450 }, width: 1400, depth: 900, rotation: 0 }] : [];
     return { rays, polygon, ceilingMm: H, existing: [], exclude };
-  });
+  }).concat(sunnyGlassWalls());
+}
+
+/**
+ * Floor-to-ceiling glass (落地窗) in strong sun, with a round column in the
+ * middle of the room: a whole glass wall corner to corner, and two panes side
+ * by side — the walks that tuned the edge trimming and the sunlit-wall rule.
+ */
+function sunnyGlassWalls() {
+  const polygon = [{ x: 0, z: 0 }, { x: 6000, z: 0 }, { x: 6000, z: 5000 }, { x: 0, z: 5000 }];
+  const scenes: SimRoom['patches'][] = [
+    [{ wall: 0, t0: 0, t1: 6000, y0: 0, y1: 3000, surface: 'glass' }],
+    [{ wall: 0, t0: 800, t1: 2800, y0: 0, y1: 3000, surface: 'glass' }, { wall: 0, t0: 3200, t1: 5200, y0: 0, y1: 3000, surface: 'glass' }],
+  ];
+  return scenes.flatMap((patches, k) => (['wall', 'none'] as const).map((fill, j) => {
+    const sim: SimRoom = { polygon, ceiling: 3000, patches, pillars: [{ x: 3000, z: 2500, shape: 'round', width: 450 }] };
+    const rays = simulateScan(sim, { daylight: true, harsh: true, fill, seed: 300 + 2 * k + j, laps: 1, stepMm: 500 })
+      .map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
+    return { rays, polygon, ceilingMm: 3000, existing: [], exclude: [] as Footprint[] };
+  }));
 }
 
 function images(): DetectorImage[] {
@@ -169,7 +188,7 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
     expect(diffs).toEqual([]);
   });
 
-  it('on 16 simulated walks: glass by day and night (confidence and brightness included)', () => {
+  it('on 20 simulated walks: glass by day and night (confidence and brightness included)', () => {
     const diffs: number[] = [];
     let found = 0;
     sims.forEach((g, i) => {
@@ -181,7 +200,7 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
         close(o.width, sw[k].width) && close(o.height, sw[k].height) && close(o.sill, sw[k].sill ?? 0));
       if (!same) diffs.push(i);
     });
-    expect(found, 'the walks find glass at all, so agreement means something').toBeGreaterThanOrEqual(12);
+    expect(found, 'the walks find glass at all, so agreement means something').toBeGreaterThanOrEqual(15);
     expect(diffs).toEqual([]);
   });
 
