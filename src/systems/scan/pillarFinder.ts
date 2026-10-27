@@ -64,6 +64,8 @@ export interface PillarOptions {
    * cupboard does).
    */
   footprintClearMm?: number;
+  /** A round column may reach this far into the wall line (a fitting error, a recess). */
+  wallTouchMm?: number;
 }
 
 export const PILLAR_DEFAULTS: Required<PillarOptions> = {
@@ -79,6 +81,7 @@ export const PILLAR_DEFAULTS: Required<PillarOptions> = {
   maxSpanMm: 1300,
   maxAspect: 2.5,
   footprintClearMm: 300,
+  wallTouchMm: 100,
 };
 
 /** Something already known to stand there — a RoomPlan object, as a footprint. */
@@ -283,8 +286,11 @@ export function findPillars(
     // 4 — Where it stands: inside the room, clear of the walls, not already
     // known as a piece of furniture, not found twice.
     const corners = footprintCorners(pillar);
+    // A round one may stand right against a wall — the concrete column at a
+    // glass wall — since nothing that only looks like a column there (a tall
+    // cupboard, a pantry) is round. A box must stand clear.
     const clear = pillar.shape === 'round'
-      ? inside(pillar.center, polygon) && edgeClearance(pillar.center, polygon) - pillar.width / 2 >= o.footprintClearMm
+      ? inside(pillar.center, polygon) && edgeClearance(pillar.center, polygon) >= pillar.width / 2 - o.wallTouchMm
       : corners.every((p) => inside(p, polygon) && edgeClearance(p, polygon) >= o.footprintClearMm);
     if (!clear) continue;
     if (exclude.some((f) => withinFootprint(pillar.center, f, 150))) continue;

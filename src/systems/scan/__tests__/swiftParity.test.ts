@@ -82,9 +82,9 @@ function simCases(rnd: () => number) {
 }
 
 /**
- * Floor-to-ceiling glass (落地窗) in strong sun, with a round column in the
- * middle of the room: a whole glass wall corner to corner, and two panes side
- * by side — the walks that tuned the edge trimming and the sunlit-wall rule.
+ * Floor-to-ceiling glass (落地窗) in strong sun, with a round column: a whole
+ * glass wall corner to corner with the column in the middle of the room, and
+ * two panes side by side with the column against the glass.
  */
 function sunnyGlassWalls() {
   const polygon = [{ x: 0, z: 0 }, { x: 6000, z: 0 }, { x: 6000, z: 5000 }, { x: 0, z: 5000 }];
@@ -93,7 +93,9 @@ function sunnyGlassWalls() {
     [{ wall: 0, t0: 800, t1: 2800, y0: 0, y1: 3000, surface: 'glass' }, { wall: 0, t0: 3200, t1: 5200, y0: 0, y1: 3000, surface: 'glass' }],
   ];
   return scenes.flatMap((patches, k) => (['wall', 'none'] as const).map((fill, j) => {
-    const sim: SimRoom = { polygon, ceiling: 3000, patches, pillars: [{ x: 3000, z: 2500, shape: 'round', width: 450 }] };
+    // The second scene's column stands against the glass, as in the field photo.
+    const column = k === 1 ? { x: 1000, z: 300, shape: 'round' as const, width: 600 } : { x: 3000, z: 2500, shape: 'round' as const, width: 450 };
+    const sim: SimRoom = { polygon, ceiling: 3000, patches, pillars: [column] };
     const rays = simulateScan(sim, { daylight: true, harsh: true, fill, seed: 300 + 2 * k + j, laps: 1, stepMm: 500 })
       .map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
     return { rays, polygon, ceilingMm: 3000, existing: [], exclude: [] as Footprint[] };

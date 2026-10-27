@@ -70,6 +70,17 @@ export interface SimRoom {
   balconyMm?: number | null;
   /** The walk, as a closed loop. Defaults to the bounding box inset by 1.1 m. */
   path?: P[];
+  /**
+   * Bulkheads and soffits: solid, hanging from the ceiling down to `bottom`
+   * over any outline — along a window, across the room, at an angle.
+   */
+  soffits?: { polygon: P[]; bottom: number }[];
+  /**
+   * An open ceiling (expanded metal mesh, a grid with no tiles): `open` of the
+   * sensor's dots pass through it to the slab at `slab`. Where a dot and its
+   * neighbours disagree, ARKit's smoothed depth lands somewhere in between.
+   */
+  ceilingMesh?: { open: number; slab: number };
 }
 
 export interface SimConditions {
@@ -92,7 +103,7 @@ const ROWS = 18;
 
 interface Hit {
   t: number;
-  kind: 'wall' | 'floor' | 'ceiling' | 'pillar' | 'box';
+  kind: 'wall' | 'floor' | 'ceiling' | 'pillar' | 'box' | 'soffit';
   wall?: number;
   u?: number;
   normal: V3;
@@ -157,7 +168,41 @@ function cast(room: SimRoom, o: V3, dir: V3): Hit | null {
     const h = slab(o, dir, b);
     if (h) take({ ...h, kind: 'box' });
   }
+  for (const sf of room.soffits ?? []) {
+    // Its underside…
+    if (dir.y > 0 && o.y < sf.bottom) {
+      const t = (sf.bottom - o.y) / dir.y;
+      const p = add(o, dir, t);
+      if (inside(p, sf.polygon)) take({ t, kind: 'soffit', normal: { x: 0, y: -1, z: 0 } });
+    }
+    // …and its sides.
+    const m = sf.polygon.length;
+    for (let i = 0; i < m; i++) {
+      const a = sf.polygon[i], b = sf.polygon[(i + 1) % m];
+      const ex = b.x - a.x, ez = b.z - a.z;
+      const den = dir.x * ez - dir.z * ex;
+      if (Math.abs(den) < 1e-12) continue;
+      const t = ((a.x - o.x) * ez - (a.z - o.z) * ex) / den;
+      const u = ((a.x - o.x) * dir.z - (a.z - o.z) * dir.x) / den;
+      if (u < 0 || u > 1) continue;
+      const p = add(o, dir, t);
+      if (p.y < sf.bottom || p.y > room.ceiling) continue;
+      const len = Math.hypot(ex, ez);
+      let normal = { x: ez / len, y: 0, z: -ex / len };
+      if (dot3(normal, dir) > 0) normal = { x: -normal.x, y: 0, z: -normal.z };
+      take({ t, kind: 'soffit', normal });
+    }
+  }
   return best;
+}
+
+function inside(p: { x: number; z: number }, poly: P[]): boolean {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if (a.z > p.z !== b.z > p.z && p.x < ((b.x - a.x) * (p.z - a.z)) / (b.z - a.z) + a.x) c = !c;
+  }
+  return c;
 }
 
 /** Ray against an axis-aligned box, from outside it. */
@@ -241,8 +286,17 @@ function read(room: SimRoom, eye: V3, dir: V3, c: SimConditions, rnd: () => numb
       : c.fill === 'beyond' ? (far ?? pane + 3000 + rnd() * 2000)
         : null;
 
+  if (h.kind === 'ceiling' && room.ceilingMesh) {
+    // Through the mesh to the slab, or caught on it, or ARKit's blend of both.
+    const through = (room.ceilingMesh.slab - room.ceiling) / dir.y;
+    const u = rnd();
+    const extra = u < room.ceilingMesh.open ? through
+      : u < room.ceilingMesh.open + 0.15 ? through * rnd()
+        : 0;
+    return measured(r + extra, extra > 0 ? 90 : 175);
+  }
   if (!patch) {
-    const luma = h.kind === 'floor' ? 120 : h.kind === 'ceiling' ? 175 : h.kind === 'box' ? 95 : 150;
+    const luma = h.kind === 'floor' ? 120 : h.kind === 'ceiling' || h.kind === 'soffit' ? 175 : h.kind === 'box' ? 95 : 150;
     return measured(r, luma);
   }
   switch (patch.surface) {
