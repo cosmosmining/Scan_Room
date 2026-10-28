@@ -1,6 +1,7 @@
 // Swift ⇄ TypeScript parity harness.
 //
-// The iPad's scan geometry (WallLoop, GlassFinder, PillarFinder, CeilingFinder, SocketDetector) has a
+// The iPad's scan geometry (WallLoop, GlassFinder, PillarFinder, CeilingFinder, LiveLines,
+// SurfaceTracker, SocketDetector) has a
 // TypeScript twin that carries the tests. This tiny command-line tool runs the
 // SWIFT versions on whatever the TypeScript test feeds it on stdin and prints
 // the results as JSON, so `src/systems/scan/__tests__/swiftParity.test.ts` can
@@ -24,6 +25,10 @@ struct CeilingCase: Codable { var rays: [InRay]; var polygon: [Vec2]; var exclud
 struct Input: Codable {
     var walls: [[InSeg]]?; var glass: [GlassCase]?; var pillars: [PillarCase]?; var images: [GrayCase]?
     var ceilings: [CeilingCase]?
+    /// Rooms for the scan screen's lines…
+    var liveRooms: [LiveLines.Room]?
+    /// …and runs of updates for the tracker that holds them still.
+    var trackerRuns: [[[SurfaceTracker.Item]]]?
 }
 
 struct OutPillar: Codable {
@@ -36,6 +41,9 @@ struct OutCeiling: Codable { var height: Double; var seeThroughTo: Double?; var 
 struct Output: Codable {
     var walls: [OutWall]; var glass: [[ScanOpening]]; var pillars: [[OutPillar]]; var detections: [[OutDet]]
     var ceilings: [OutCeiling?]
+    var liveLines: [[LiveLines.Line]]
+    /// Per run, per update: what the tracker says to draw.
+    var tracked: [[[SurfaceTracker.Tracked]]]
 }
 
 func ray(_ r: InRay) -> GlassFinder.Ray {
@@ -95,6 +103,14 @@ let ceilings: [OutCeiling?] = (input.ceilings ?? []).map { c in
     }
 }
 
+let liveLines: [[LiveLines.Line]] = (input.liveRooms ?? []).map(LiveLines.build)
+
+let tracked: [[[SurfaceTracker.Tracked]]] = (input.trackerRuns ?? []).map { run in
+    let tracker = SurfaceTracker()
+    return run.map { tracker.update($0) }
+}
+
 FileHandle.standardOutput.write(try JSONEncoder().encode(Output(
-    walls: walls, glass: glass, pillars: pillars, detections: detections, ceilings: ceilings
+    walls: walls, glass: glass, pillars: pillars, detections: detections, ceilings: ceilings,
+    liveLines: liveLines, tracked: tracked
 )))

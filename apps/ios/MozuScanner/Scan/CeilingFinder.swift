@@ -51,6 +51,10 @@ enum CeilingFinder {
     static let minZoneSideMm = 200.0
     static let simplifyMm = 70.0
     static let snapMm = 150.0
+    /// After tracing, a corner whose triangle with its neighbours is smaller
+    /// than this is grid noise and is dropped (smallest first), mm². Never more
+    /// than a tenth of the bulkhead's own area, so a small one keeps its corners.
+    static let cornerAreaMm2 = 150_000.0
     static let minCells = 30
 
     private static let unknown: Int8 = 9
@@ -81,6 +85,44 @@ enum CeilingFinder {
         let dx = p.x - q.x
         let dz = p.z - q.z
         return (q, (dx * dx + dz * dz).squareRoot())
+    }
+
+    /// The room corner nearest p, and how far it is.
+    private static func nearestCorner(_ p: Vec2, _ poly: [Vec2]) -> (q: Vec2, d: Double) {
+        var best: (q: Vec2, d: Double) = (p, Double.infinity)
+        for c in poly {
+            let d = ((p.x - c.x) * (p.x - c.x) + (p.z - c.z) * (p.z - c.z)).squareRoot()
+            if d < best.d { best = (c, d) }
+        }
+        return best
+    }
+
+    /// Drop the corners that are only grid noise: repeatedly the one whose
+    /// triangle with its two neighbours is smallest, while that is under
+    /// `minArea`. Where it meets a wall is where the wall's top steps, so those
+    /// corners stay, unless they are only a point along the wall.
+    private static func pruneByArea(_ loop: [Vec2], _ minArea: Double, _ polygon: [Vec2]) -> [Vec2] {
+        var pts = loop
+        while pts.count > 3 {
+            let n = pts.count
+            var k = -1
+            var best = Double.infinity
+            for i in 0..<n {
+                let a = pts[(i - 1 + n) % n]
+                let b = pts[i]
+                let c = pts[(i + 1) % n]
+                let cross: Double = (b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)
+                let area = abs(cross) / 2
+                if area >= 1000 && nearestWall(b, polygon).d <= 1 { continue }
+                if area < best {
+                    best = area
+                    k = i
+                }
+            }
+            if k < 0 || best >= minArea { break }
+            pts.remove(at: k)
+        }
+        return pts
     }
 
     private static func nearestWall(_ p: Vec2, _ poly: [Vec2]) -> (q: Vec2, d: Double) {
@@ -554,7 +596,11 @@ enum CeilingFinder {
             }, members, cols)
             var outline: [Vec2] = corners.map { Vec2(x: minX + Double($0.0) * cellMm, z: minZ + Double($0.1) * cellMm) }
             outline = simplifyLoop(outline, simplifyMm)
+            // Onto the walls it meets — into the corner when it is that close
+            // to one, so a bulkhead round a corner does not stop short of it.
             outline = outline.map { p in
+                let c = nearestCorner(p, polygon)
+                if c.d <= snapMm { return c.q }
                 let w = nearestWall(p, polygon)
                 return w.d <= snapMm || !inside(p, polygon) ? w.q : p
             }
@@ -567,8 +613,12 @@ enum CeilingFinder {
                 clean.removeLast()
             }
             if clean.count < 3 || abs(signedArea(clean)) < minZoneAreaMm2 / 2 { continue }
-            if signedArea(clean) < 0 { clean.reverse() }
-            zones.append(Zone(polygon: clean, height: zoneHeight))
+            var pruned = cornerAreaMm2 > 0
+                ? pruneByArea(clean, min(cornerAreaMm2, abs(signedArea(clean)) / 10), polygon)
+                : clean
+            if abs(signedArea(pruned)) < minZoneAreaMm2 / 2 { continue }
+            if signedArea(pruned) < 0 { pruned.reverse() }
+            zones.append(Zone(polygon: pruned, height: zoneHeight))
         }
 
         return Analysis(height: height, seeThroughTo: seeThroughTo, zones: zones)

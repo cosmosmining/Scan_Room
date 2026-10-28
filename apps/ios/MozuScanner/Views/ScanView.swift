@@ -14,26 +14,42 @@ struct ScanView: View {
     /// Brief feedback for the last tap, so a miss is distinguishable from a
     /// gesture that never registered.
     @State private var tapNotice: String?
+    /// Draw the scan's own steady lines rather than RoomPlan's (see
+    /// `RoomCaptureController.steady`). Read when a scan starts.
+    @AppStorage(RoomCaptureController.steadyLinesKey) private var steadyLines = true
 
     var body: some View {
         ZStack(alignment: .bottom) {
             // Mount the RoomPlan view only once it exists (created on first
             // `start()`), so the idle "Start scan" screen appears instantly and the
             // ARKit start-up cost is paid only when the user actually scans.
-            if let captureView = controller.captureView {
+            if let session = controller.session {
                 GeometryReader { geo in
-                    RoomCaptureViewRep(captureView: captureView)
-                        .overlay(SocketMarkersOverlay(controller: controller))
-                        // Tapping works throughout the scan, not only in the
-                        // marking stage. Pointing at a socket is a manual
-                        // override, and an override you have to switch modes to
-                        // reach is one you will not use when it matters.
-                        // RoomPlan's view takes no touches of its own, so
-                        // nothing is being stolen from it.
-                        .contentShape(Rectangle())
-                        .gesture(markingTap(in: geo.size))
+                    Group {
+                        if controller.steady {
+                            SteadyScanView(controller: controller, arSession: session.arSession)
+                        } else if let captureView = controller.captureView {
+                            RoomCaptureViewRep(captureView: captureView)
+                        }
+                    }
+                    .overlay(SocketMarkersOverlay(controller: controller))
+                    // Tapping works throughout the scan, not only in the
+                    // marking stage. Pointing at a socket is a manual
+                    // override, and an override you have to switch modes to
+                    // reach is one you will not use when it matters.
+                    // Neither camera view takes touches of its own, so
+                    // nothing is being stolen from it.
+                    .contentShape(Rectangle())
+                    .gesture(markingTap(in: geo.size))
                 }
                 .overlay(alignment: .top) { wallBanner }
+                .overlay(alignment: .topLeading) {
+                    if controller.steady, controller.phase == .scanning {
+                        SteadyPlanInset(controller: controller)
+                            .padding(.top, 60)
+                            .padding(.leading, 16)
+                    }
+                }
                 .ignoresSafeArea()
             }
 
@@ -141,9 +157,21 @@ struct ScanView: View {
             }
 
         default:
-            Button("Start scan", action: controller.start)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+            VStack(spacing: 10) {
+                Button("Start scan", action: controller.start)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                // Steady lines are the app's own, held still and drawn from the
+                // room the plan is built from; off shows RoomPlan's own view.
+                Toggle("Steady lines", isOn: $steadyLines)
+                    .toggleStyle(.switch)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: 220)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.45), in: Capsule())
+            }
         }
     }
 
@@ -208,6 +236,10 @@ struct ScanView: View {
         if let tapNotice { return tapNotice }
         switch controller.phase {
         case .scanning:
+            // RoomPlan's own view coaches on screen; the steady view says it here.
+            if controller.steady, let coaching = controller.coaching {
+                return coaching
+            }
             if controller.stage == .marking {
                 return "Detection paused \u{00B7} tap each socket to pin it, tap a pin to remove it"
                     + " \u{00B7} \(controller.fixturesFound) placed."
@@ -329,7 +361,7 @@ private struct SocketMarkersOverlay: View {
     /// usually is not, so a box mapped by hand lands plausibly but incorrectly.
     private func markers(in size: CGSize) -> [Marker] {
         guard size.width > 1, size.height > 1,
-              let frame = controller.captureView?.captureSession.arSession.currentFrame
+              let frame = controller.session?.arSession.currentFrame
         else { return [] }
         let orientation = interfaceOrientation()
         let toCamera = frame.camera.transform.inverse

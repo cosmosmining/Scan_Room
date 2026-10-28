@@ -83,6 +83,12 @@ export interface CeilingOptions {
   simplifyMm?: number;
   /** A zone's edge this close to a wall is on it. */
   snapMm?: number;
+  /**
+   * After tracing, a corner whose triangle with its neighbours is smaller than
+   * this is grid noise and is dropped (smallest first), mm². Never more than a
+   * tenth of the bulkhead's own area, so a small one keeps its corners.
+   */
+  cornerAreaMm2?: number;
   /** Fewer cells than this seen overhead says nothing about the ceiling. */
   minCells?: number;
 }
@@ -108,6 +114,7 @@ export const CEILING_DEFAULTS: Required<CeilingOptions> = {
   minZoneSideMm: 200,
   simplifyMm: 70,
   snapMm: 150,
+  cornerAreaMm2: 150_000,
   minCells: 30,
 };
 
@@ -134,6 +141,16 @@ function nearestOnSegment(p: Vec2, a: Vec2, b: Vec2): { q: Vec2; d: number } {
   const dx = p.x - q.x;
   const dz = p.z - q.z;
   return { q, d: Math.sqrt(dx * dx + dz * dz) };
+}
+
+/** The room corner nearest p, and how far it is. */
+function nearestCorner(p: Vec2, poly: Vec2[]): { q: Vec2; d: number } {
+  let best = { q: p, d: Infinity };
+  for (const c of poly) {
+    const d = Math.sqrt((p.x - c.x) * (p.x - c.x) + (p.z - c.z) * (p.z - c.z));
+    if (d < best.d) best = { q: c, d };
+  }
+  return best;
 }
 
 function nearestWall(p: Vec2, poly: Vec2[]): { q: Vec2; d: number } {
@@ -215,6 +232,38 @@ function simplifyLoop(loop: Vec2[], tol: number): Vec2[] {
   const one = simplifyChain(loop.slice(0, far + 1), tol);
   const two = simplifyChain(loop.slice(far).concat([loop[0]]), tol);
   return one.slice(0, -1).concat(two.slice(0, -1));
+}
+
+/**
+ * Drop the corners that are only grid noise: repeatedly the one whose
+ * triangle with its two neighbours is smallest, while that is under `minArea`.
+ * A staircase along an angled edge, or a zig-zag where the readings were thin,
+ * goes; the real corners, whose triangles span the bulkhead, stay.
+ */
+function pruneByArea(loop: Vec2[], minArea: number, polygon: Vec2[]): Vec2[] {
+  const pts = loop.slice();
+  // Where it meets a wall is where the wall's top steps: those corners stay,
+  // unless they are only a point along the wall between two others on it.
+  const onWall = (p: Vec2) => nearestWall(p, polygon).d <= 1;
+  while (pts.length > 3) {
+    const n = pts.length;
+    let k = -1;
+    let best = Infinity;
+    for (let i = 0; i < n; i++) {
+      const a = pts[(i - 1 + n) % n];
+      const b = pts[i];
+      const c = pts[(i + 1) % n];
+      const area = Math.abs((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)) / 2;
+      if (area >= 1000 && onWall(b)) continue;
+      if (area < best) {
+        best = area;
+        k = i;
+      }
+    }
+    if (k < 0 || best >= minArea) break;
+    pts.splice(k, 1);
+  }
+  return pts;
 }
 
 /**
@@ -658,8 +707,11 @@ function findSquare(
     const corners = traceOutline(member, members, cols);
     let outline: Vec2[] = corners.map(([cx, cy]) => ({ x: minX + cx * o.cellMm, z: minZ + cy * o.cellMm }));
     outline = simplifyLoop(outline, o.simplifyMm);
-    // Onto the walls it meets.
+    // Onto the walls it meets — into the corner when it is that close to one,
+    // so a bulkhead round a corner does not stop short of it along one wall.
     outline = outline.map((p) => {
+      const c = nearestCorner(p, polygon);
+      if (c.d <= o.snapMm) return c.q;
       const w = nearestWall(p, polygon);
       return w.d <= o.snapMm || !insidePolygon(p, polygon) ? w.q : p;
     });
@@ -673,8 +725,12 @@ function findSquare(
       if (Math.abs(a.x - b.x) <= 1 && Math.abs(a.z - b.z) <= 1) clean.pop();
     }
     if (clean.length < 3 || Math.abs(signedArea(clean)) < o.minZoneAreaMm2 / 2) continue;
-    if (signedArea(clean) < 0) clean.reverse();
-    zones.push({ polygon: clean, height: zoneHeight });
+    const pruned = o.cornerAreaMm2 > 0
+      ? pruneByArea(clean, Math.min(o.cornerAreaMm2, Math.abs(signedArea(clean)) / 10), polygon)
+      : clean;
+    if (Math.abs(signedArea(pruned)) < o.minZoneAreaMm2 / 2) continue;
+    if (signedArea(pruned) < 0) pruned.reverse();
+    zones.push({ polygon: pruned, height: zoneHeight });
   }
 
   return { height, seeThroughTo, zones };
