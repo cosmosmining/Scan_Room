@@ -80,10 +80,22 @@ web app, the browser extensions, and this app all produce an identical floorplan
 | `Models/RoomScan.swift` | the `mozu.roomscan/1` contract (Codable) |
 | `Scan/RoomCaptureController.swift` | drives `RoomCaptureSession` + `RoomBuilder` |
 | `Scan/FloorplanBuilder.swift` | `CapturedRoom` → ordered polygon + openings + objects |
+| `Scan/CeilingFinder.swift` | the ceiling from the depth readings: its height through a mesh, bulkheads and recesses |
+| `Scan/LiveLines.swift` | the scan screen's lines from the room so far, and `SurfaceTracker`, which holds them still |
+| `Views/SteadyScanView.swift` | RoomPlan's session through an ARSCNView, with those lines and a live plan inset |
 | `Floorplan/Floorplan.swift` | pure dimensioning engine (Swift twin of the SDK) |
 | `Floorplan/FloorplanCanvas.swift` | SwiftUI plan renderer (the "2 Floorplan" view) |
 | `Views/*` | scan / result / app flow |
 | `Export/Handoff.swift` | `/scan` deep link + share |
+
+The scan screen draws its own **steady lines** by default: RoomPlan's session
+runs without RoomPlan's view, and the room is drawn from the same model the
+floor plan is built from. Lines appear once a surface has been seen twice and
+hold still unless a change lasts. Wall tops step down under bulkheads, and
+doors stand on the floor. Turn off **Steady lines** on the start screen to get
+RoomPlan's own view back.
+
+To upload to TestFlight, see [`TESTFLIGHT.md`](./TESTFLIGHT.md).
 
 ## Why native on iPhone
 

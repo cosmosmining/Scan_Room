@@ -90,6 +90,12 @@ final class RoomCaptureController: ObservableObject {
     }()
     private var tracked: [SurfaceTracker.Tracked] = []
     private var trackedPreview: [SurfaceTracker.Tracked] = []
+    /// The outline drawn for each tracked bulkhead, and the tracked numbers it
+    /// was taken at. Two tracings of one bulkhead need not list their corners
+    /// in the same order, so outlines are never averaged: a bulkhead keeps the
+    /// outline it has until the tracker says it has moved, then takes the new
+    /// one whole.
+    private var zoneShapes: [Int: (polygon: [Vec2], values: [Double])] = [:]
     private var lineIds = LineIdentity()
     /// Bumped per room RoomPlan sends, so each is tracked once.
     private var roomGeneration = 0
@@ -345,6 +351,7 @@ final class RoomCaptureController: ObservableObject {
         previewTracker.reset()
         tracked = []
         trackedPreview = []
+        zoneShapes = [:]
         lineIds = LineIdentity()
         roomGeneration = 0
         trackedGeneration = 0
@@ -403,18 +410,17 @@ final class RoomCaptureController: ObservableObject {
 
     private func trackPreview(_ p: FloorplanBuilder.Preview) {
         var items: [SurfaceTracker.Item] = []
+        // Each bulkhead by where it is, how low, and how big — see `zoneShapes`.
+        var traced: [(center: Vec2, polygon: [Vec2])] = []
         if let c = p.ceiling {
             items.append(SurfaceTracker.Item(kind: "ceiling", key: "ceiling", values: [c.height]))
             for z in c.zones where z.polygon.count >= 3 {
                 let n = Double(z.polygon.count)
                 let cx: Double = z.polygon.map(\.x).reduce(0, +) / n
                 let cz: Double = z.polygon.map(\.z).reduce(0, +) / n
-                var v: [Double] = [cx, cz, z.height]
-                for q in z.polygon {
-                    v.append(q.x)
-                    v.append(q.z)
-                }
-                items.append(SurfaceTracker.Item(kind: "zone", key: nil, values: v))
+                let size: Double = Geo.area(z.polygon).squareRoot()
+                items.append(SurfaceTracker.Item(kind: "zone", key: nil, values: [cx, cz, z.height, size]))
+                traced.append((Vec2(x: cx, z: cz), z.polygon))
             }
         }
         let poly = p.polygon
@@ -437,6 +443,31 @@ final class RoomCaptureController: ObservableObject {
             ))
         }
         trackedPreview = previewTracker.update(items)
+
+        var shapes: [Int: (polygon: [Vec2], values: [Double])] = [:]
+        for t in trackedPreview where t.kind == "zone" && t.values.count == 4 {
+            if let kept = zoneShapes[t.id], kept.values == t.values {
+                shapes[t.id] = kept
+                continue
+            }
+            // New, or moved: the outline of the tracing nearest it now.
+            let at = Vec2(x: t.values[0], z: t.values[1])
+            var best: [Vec2]?
+            var bestD = Double.infinity
+            for z in traced {
+                let d = Geo.distance(z.center, at)
+                if d < bestD {
+                    bestD = d
+                    best = z.polygon
+                }
+            }
+            if let best {
+                shapes[t.id] = (best, t.values)
+            } else if let kept = zoneShapes[t.id] {
+                shapes[t.id] = kept
+            }
+        }
+        zoneShapes = shapes
     }
 
     /// The tracked surfaces → the room the floor plan would be → its lines.
@@ -453,14 +484,30 @@ final class RoomCaptureController: ObservableObject {
                     heightMm: w.values[4], topMm: w.values[5] - floorY
                 )
             }
+        // The first wall or two, before there is an outline: drawn as they are.
+        func asSeen(_ walls: [WallLoop.Segment]) -> [LiveLines.Line] {
+            walls.flatMap { w -> [LiveLines.Line] in
+                let top: Double = w.topMm ?? w.heightMm ?? FloorplanBuilder.defaultCeilingMm
+                let a0 = LiveLines.P3(x: w.a.x, y: 0, z: w.a.z)
+                let b0 = LiveLines.P3(x: w.b.x, y: 0, z: w.b.z)
+                let a1 = LiveLines.P3(x: w.a.x, y: top, z: w.a.z)
+                let b1 = LiveLines.P3(x: w.b.x, y: top, z: w.b.z)
+                return [
+                    LiveLines.Line(a: a0, b: b0, kind: .floor),
+                    LiveLines.Line(a: a1, b: b1, kind: .ceiling),
+                    LiveLines.Line(a: a0, b: a1, kind: .corner),
+                    LiveLines.Line(a: b0, b: b1, kind: .corner),
+                ]
+            }
+        }
         guard segments.count >= 2 else {
-            publishSteadyLines([], floorY: floorY)
+            publishSteadyLines(asSeen(segments), floorY: floorY)
             return
         }
         let analysis = WallLoop.analyse(segments)
         let polygon = Geo.ensureCCW(Geo.simplify(analysis.outline))
         guard polygon.count >= 3 else {
-            publishSteadyLines([], floorY: floorY)
+            publishSteadyLines(asSeen(segments), floorY: floorY)
             return
         }
         let wallTop: Double = segments.compactMap(\.topMm).max() ?? FloorplanBuilder.defaultCeilingMm
@@ -494,15 +541,10 @@ final class RoomCaptureController: ObservableObject {
             LiveLines.Pillar(center: $0.center, shape: $0.shape.rawValue, width: $0.width, depth: $0.depth, rotation: $0.rotation)
         }
         let zones: [LiveLines.Zone] = trackedPreview
-            .filter { $0.kind == "zone" && $0.values.count >= 9 }
-            .map { z in
-                var outline: [Vec2] = []
-                var k = 3
-                while k + 1 < z.values.count {
-                    outline.append(Vec2(x: z.values[k], z: z.values[k + 1]))
-                    k += 2
-                }
-                return LiveLines.Zone(polygon: outline, height: z.values[2])
+            .filter { $0.kind == "zone" && $0.values.count == 4 }
+            .compactMap { z -> LiveLines.Zone? in
+                guard let shape = zoneShapes[z.id] else { return nil }
+                return LiveLines.Zone(polygon: shape.polygon, height: z.values[2])
             }
         // Only the walls RoomPlan has actually seen are drawn: until the room
         // is walked round, the outline closes across the gap with a guess.
