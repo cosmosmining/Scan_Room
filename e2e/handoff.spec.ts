@@ -118,6 +118,80 @@ test.describe('scan handoff', () => {
     await expect(page.locator('text').filter({ hasText: /^sofa$/ })).toHaveCount(1);
   });
 
+  test('a scan turned and moved as a real one is, opens like any other', async ({ page }) => {
+    // RoomPlan's axes follow wherever the iPad faced when the scan began.
+    const scan = JSON.parse(SCAN);
+    const a = (23 * Math.PI) / 180;
+    const move = (v: { x: number; z: number }) => ({
+      x: v.x * Math.cos(a) - v.z * Math.sin(a) - 2400,
+      z: v.x * Math.sin(a) + v.z * Math.cos(a) - 1800,
+    });
+    scan.polygon = scan.polygon.map(move);
+    scan.objects = scan.objects.map((o: { center: { x: number; z: number }; rotation: number }) => ({
+      ...o, center: move(o.center), rotation: o.rotation + a,
+    }));
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    const res = await page.request.post('/api/scan-handoff', { data: scan });
+    expect(res.status()).toBe(201);
+    await page.goto((await res.json()).url);
+    await expect(page.getByText('Floorplan · auto-measured')).toBeVisible();
+    await expect(page.getByText('22.5 m²').first()).toBeVisible(); // on the plan and in the stats
+    // Squared up: its own 6 × 5 m, not the box around it standing crooked.
+    await expect(page.getByLabel(/Width/).first()).toHaveValue('6000');
+    await expect(page.getByLabel(/Depth/).first()).toHaveValue('5000');
+    await page.getByRole('button', { name: '2D', exact: true }).click();
+    await expect(page.locator('circle[fill="#5b5b64"]')).toHaveCount(1);
+    await expect(page.locator('text').filter({ hasText: /^sofa$/ })).toHaveCount(1);
+    await page.getByRole('button', { name: '3D', exact: true }).click();
+    await page.waitForTimeout(3000);
+    await expect(page.locator('canvas')).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test('a bulkhead and a mesh ceiling reach the plan, turned with the room, and draw in 3D', async ({ page }) => {
+    // An L-shaped bulkhead with an angled corner along two walls, as the iPad's
+    // ceiling finder reports one, in a room scanned at 23°.
+    const scan = JSON.parse(SCAN);
+    const a = (23 * Math.PI) / 180;
+    const move = (v: { x: number; z: number }) => ({
+      x: v.x * Math.cos(a) - v.z * Math.sin(a) - 2400,
+      z: v.x * Math.sin(a) + v.z * Math.cos(a) - 1800,
+    });
+    const bulkhead = [
+      { x: 0, z: 0 }, { x: 6000, z: 0 }, { x: 6000, z: 600 }, { x: 1100, z: 600 },
+      { x: 700, z: 1000 }, { x: 700, z: 5000 }, { x: 0, z: 5000 },
+    ];
+    scan.polygon = scan.polygon.map(move);
+    scan.objects = scan.objects.map((o: { center: { x: number; z: number }; rotation: number }) => ({
+      ...o, center: move(o.center), rotation: o.rotation + a,
+    }));
+    scan.ceiling = { zones: [{ polygon: bulkhead.map(move), height: 2350 }], seeThroughTo: 3400 };
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    const res = await page.request.post('/api/scan-handoff', { data: scan });
+    expect(res.status()).toBe(201);
+    await page.goto((await res.json()).url);
+    await expect(page.getByText('Floorplan · auto-measured')).toBeVisible();
+    await page.getByRole('button', { name: '2D', exact: true }).click();
+    const zone = page.getByTestId('ceiling-zone');
+    await expect(zone).toHaveCount(1);
+    await expect(zone.locator('text')).toHaveText('Bulkhead 235');
+    await expect(page.getByTestId('mesh-ceiling')).toHaveText('Mesh ceiling · slab 340 cm');
+    // Squared up with the room: the outline lands back where it was drawn.
+    const points = (await zone.locator('polygon').getAttribute('points'))!
+      .split(' ')
+      .map((p) => p.split(',').map(Number));
+    points.forEach(([x, z], i) => {
+      expect(Math.abs(x - bulkhead[i].x)).toBeLessThan(1);
+      expect(Math.abs(z - bulkhead[i].z)).toBeLessThan(1);
+    });
+    await page.getByRole('button', { name: '3D', exact: true }).click();
+    await page.waitForTimeout(3000);
+    await expect(page.locator('canvas')).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   test('the 3D view renders without errors', async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));

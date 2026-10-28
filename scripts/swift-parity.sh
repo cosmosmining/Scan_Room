@@ -20,6 +20,8 @@ SOURCES=(
   "$APP/Scan/WallLoop.swift"
   "$APP/Scan/GlassFinder.swift"
   "$APP/Scan/PillarFinder.swift"
+  "$APP/Scan/CeilingFinder.swift"
+  "$APP/Scan/LiveLines.swift"
   "$APP/Scan/SocketDetector.swift"
   apps/ios/ParityHarness/main.swift
 )

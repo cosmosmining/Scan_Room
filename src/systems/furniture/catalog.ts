@@ -13,6 +13,7 @@
  */
 
 import type { SurfaceFinish } from '@/systems/aesthetic/finishes';
+import type { LayoutObstacle } from '@/systems/layout/types';
 
 export interface FurnitureItem {
   id: string;
@@ -71,6 +72,26 @@ export function yawOffset(local: { x: number; z: number }, rotationY: number): {
 
 /** The catalogue item behind a placed piece — absent for a scanned one. */
 export const SCANNED_ITEM_ID = '__scanned__';
+
+/**
+ * The columns among the placed pieces, as the obstacles the cabinet layout
+ * packs clear of. Only columns: they are structure. The rest of the scanned
+ * furniture is mostly going out before the kitchen goes in.
+ */
+export function columnObstacles(items: PlacedFurniture[]): LayoutObstacle[] {
+  return items
+    .filter((i) => i.column && i.size)
+    .map((i) => ({
+      id: i.id,
+      center: { x: i.position.x, z: i.position.z },
+      width: i.size!.width,
+      depth: i.size!.depth,
+      // A placed piece's yaw turns the other way from the plan-sense yaw the
+      // scan (and the layout) use — see `applyRoomGeometry`.
+      rotation: -i.rotationY,
+      shape: i.column === 'round' ? ('round' as const) : ('box' as const),
+    }));
+}
 
 /**
  * The size to draw a placed piece at: its measured size when it has one, else

@@ -13,6 +13,45 @@ export interface Interval {
   end: Millimeters;
 }
 
+/** What put a {@link Blocker} on a run. */
+export type BlockerKind = 'opening' | 'fixture' | 'column' | 'unit';
+
+/**
+ * A stretch of a run that some units must keep clear of, and which ones.
+ *
+ * A bare `Interval` is an old-style blocker and stops every unit. The optional
+ * fields narrow it: a window stops what would stand in front of the glass but
+ * not the base cabinets under its sill; a socket stops only the units at its
+ * height, and not one built to connect to it; a column a little way off the
+ * wall stops units deep enough to reach it.
+ */
+export interface Blocker extends Interval {
+  kind?: BlockerKind;
+  /** Vertical extent off the floor, mm. Omitted: floor to ceiling. */
+  bottom?: Millimeters;
+  top?: Millimeters;
+  /** How far out from the wall it starts; a unit no deeper than this fits behind it. */
+  fromWall?: Millimeters;
+  /** A unit that connects this utility may cover it (a sink base over its water). */
+  fixtureType?: FixtureType;
+  /** What it is, for messages: the fixture or column id. */
+  sourceId?: string;
+}
+
+/**
+ * Something standing in the room that units must not be packed into — a
+ * scanned column. Plan-sense yaw: the width axis runs along (cos, sin).
+ */
+export interface LayoutObstacle {
+  id: string;
+  center: Vec2;
+  /** Footprint, mm. A round one uses `width` as its diameter. */
+  width: Millimeters;
+  depth: Millimeters;
+  rotation: number;
+  shape: 'box' | 'round';
+}
+
 /** A usable straight stretch of wall that modules pack along (1D coordinate). */
 export interface WallRun {
   id: string;
@@ -23,7 +62,8 @@ export interface WallRun {
   length: Millimeters;
   usableStart: Millimeters; // after corner reserve / wall gap
   usableEnd: Millimeters;
-  blocked: Interval[]; // intervals blocked by openings
+  /** Stretches units must keep clear of: openings, fixtures, columns. */
+  blocked: Blocker[];
 }
 
 /** Lightweight placement spec derived from a ModuleDefinition + chosen config. */
@@ -109,6 +149,8 @@ export interface LayoutRequest {
    * walls (`wall.fixtures`); pass explicitly to override.
    */
   fixtures?: LayoutFixture[];
+  /** Columns and the like standing in the room; units are packed clear of them. */
+  obstacles?: LayoutObstacle[];
 }
 
 /** Intermediate placement along a run, before world transform. */

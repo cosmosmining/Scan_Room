@@ -29,6 +29,11 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Only the encryption iOS itself provides (HTTPS) is used, which is
+	     exempt from US export rules. Saying so here means TestFlight and the
+	     App Store do not stop each upload to ask. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>MOZU uses the camera and LiDAR to scan your room and measure it for the configurator.</string>
 	<!-- iOS 26 tightened ARKit world-sensing privacy: RoomPlan's world tracking +

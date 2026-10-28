@@ -4,6 +4,8 @@ import { detectSockets, type DetectorImage } from '@/systems/scan';
 import { analyseWalls } from '@/systems/scan/wallLoop';
 import { findGlass, type DepthRay } from '@/systems/scan/glassFinder';
 import { findPillars, type Footprint } from '@/systems/scan/pillarFinder';
+import { findCeiling } from '@/systems/scan/ceilingFinder';
+import { buildLiveLines, SurfaceTracker, type LiveRoom, type TrackItem } from '@/systems/scan/liveLines';
 import { mulberry32, room } from './helpers/roomGen';
 import { simulateScan, type SimRoom } from './helpers/sensorSim';
 
@@ -78,7 +80,159 @@ function simCases(rnd: () => number) {
     }).map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
     const exclude: Footprint[] = k % 4 === 0 ? [{ center: { x: 1300, z: D - 450 }, width: 1400, depth: 900, rotation: 0 }] : [];
     return { rays, polygon, ceilingMm: H, existing: [], exclude };
+  }).concat(sunnyGlassWalls());
+}
+
+/**
+ * Floor-to-ceiling glass (落地窗) in strong sun, with a round column: a whole
+ * glass wall corner to corner with the column in the middle of the room, and
+ * two panes side by side with the column against the glass.
+ */
+function sunnyGlassWalls() {
+  const polygon = [{ x: 0, z: 0 }, { x: 6000, z: 0 }, { x: 6000, z: 5000 }, { x: 0, z: 5000 }];
+  const scenes: SimRoom['patches'][] = [
+    [{ wall: 0, t0: 0, t1: 6000, y0: 0, y1: 3000, surface: 'glass' }],
+    [{ wall: 0, t0: 800, t1: 2800, y0: 0, y1: 3000, surface: 'glass' }, { wall: 0, t0: 3200, t1: 5200, y0: 0, y1: 3000, surface: 'glass' }],
+  ];
+  return scenes.flatMap((patches, k) => (['wall', 'none'] as const).map((fill, j) => {
+    // The second scene's column stands against the glass, as in the field photo.
+    const column = k === 1 ? { x: 1000, z: 300, shape: 'round' as const, width: 600 } : { x: 3000, z: 2500, shape: 'round' as const, width: 450 };
+    const sim: SimRoom = { polygon, ceiling: 3000, patches, pillars: [column] };
+    const rays = simulateScan(sim, { daylight: true, harsh: true, fill, seed: 300 + 2 * k + j, laps: 1, stepMm: 500 })
+      .map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
+    return { rays, polygon, ceilingMm: 3000, existing: [], exclude: [] as Footprint[] };
+  }));
+}
+
+/**
+ * Ceilings as the field photos show them: an expanded-metal mesh with a
+ * bulkhead along the windows, a bulkhead whose edge runs at an angle, an L of
+ * bulkhead round a corner with a column at the glass — and one room turned to
+ * where a real scan would put it.
+ */
+function ceilingCases() {
+  const W = 6000, D = 5000;
+  const polygon = [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: D }, { x: 0, z: D }];
+  const along = (z: number) => [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z }, { x: 0, z }];
+  const turn = (p: P) => {
+    const a = (23 * Math.PI) / 180;
+    return { x: p.x * Math.cos(a) - p.z * Math.sin(a) - 2400, z: p.x * Math.sin(a) + p.z * Math.cos(a) + 1800 };
+  };
+  const rooms: SimRoom[] = [
+    { polygon, ceiling: 2700, ceilingMesh: { open: 0.6, slab: 3400 }, soffits: [{ polygon: along(450), bottom: 2350 }] },
+    { polygon, ceiling: 2700, soffits: [{ polygon: [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: 1100 }, { x: 0, z: 400 }], bottom: 2400 }] },
+    {
+      polygon, ceiling: 2700, ceilingMesh: { open: 0.6, slab: 3400 },
+      soffits: [{ polygon: [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: 500 }, { x: 600, z: 500 }, { x: 600, z: D }, { x: 0, z: D }], bottom: 2300 }],
+      pillars: [{ x: 3000, z: 820, shape: 'round', width: 600 }],
+    },
+    { polygon: polygon.map(turn), ceiling: 2700, soffits: [{ polygon: along(450).map(turn), bottom: 2350 }] },
+  ];
+  return rooms.map((room, k) => {
+    const rays = simulateScan(room, { daylight: k % 2 === 1, fill: 'wall', seed: 400 + k, laps: 1, stepMm: 300 })
+      .map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
+    const exclude: Footprint[] = (room.pillars ?? []).map((c) => ({ center: { x: c.x, z: c.z }, width: c.width, depth: c.width, rotation: 0 }));
+    return { rays, polygon: room.polygon, exclude };
   });
+}
+
+/**
+ * Rooms for the scan screen's lines: plain, L-shaped and turned outlines;
+ * bulkheads straight, angled, L-shaped, traced short of the walls, a recess;
+ * doors floating and under a bulkhead, windows, glass, one at no wall; round
+ * and square columns — plus the bulkheads the ceiling finder really traces.
+ */
+function liveRooms(rnd: () => number, measured: { polygon: P[]; zones: { polygon: P[]; height: number }[]; height: number }[]): LiveRoom[] {
+  const lerp = (a: number, b: number) => a + (b - a) * rnd();
+  const turn = (p: P, deg: number) => {
+    const a = (deg * Math.PI) / 180;
+    return { x: p.x * Math.cos(a) - p.z * Math.sin(a) + 900, z: p.x * Math.sin(a) + p.z * Math.cos(a) - 400 };
+  };
+  const out: LiveRoom[] = [];
+  for (let k = 0; k < 40; k++) {
+    const W = lerp(3500, 7000), D = lerp(3000, 6000), H = lerp(2400, 3000);
+    const ell = k % 3 === 2;
+    let polygon: P[] = ell
+      ? [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: D / 2 }, { x: W / 2, z: D / 2 }, { x: W / 2, z: D }, { x: 0, z: D }]
+      : [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: D }, { x: 0, z: D }];
+    const deep = lerp(400, 900), bottom = H - lerp(250, 450);
+    const zonesAll: { polygon: P[]; height: number }[][] = [
+      [],
+      [{ polygon: [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: deep }, { x: 0, z: deep }], height: bottom }],
+      [{ polygon: [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: deep * 1.8 }, { x: 0, z: deep * 0.6 }], height: bottom }],
+      [{ polygon: [{ x: 80, z: 80 }, { x: W - 80, z: 80 }, { x: W - 80, z: deep }, { x: deep + 300, z: deep }, { x: deep, z: deep + 300 }, { x: deep, z: D - 80 }, { x: 80, z: D - 80 }], height: bottom }],
+      [{ polygon: [{ x: W * 0.3, z: 0 }, { x: W * 0.6, z: 0 }, { x: W * 0.6, z: deep }, { x: W * 0.3, z: deep }], height: H + 300 }],
+    ];
+    let zones = zonesAll[k % zonesAll.length];
+    let openings: LiveRoom['openings'] = [
+      { center: { x: W * 0.5, z: rnd() < 0.5 ? 20 : -15 }, width: lerp(800, 1000), bottom: lerp(-100, 200), top: lerp(1900, 2300), type: 'door' },
+      { center: { x: W - 10, z: D * 0.3 }, width: lerp(800, 1600), bottom: lerp(700, 1000), top: lerp(1900, 2300), type: 'window' },
+      { center: { x: W * 0.4, z: ell ? D / 2 - 5 : D + 5 }, width: lerp(900, 2400), bottom: 0, top: H, type: 'door', glass: true },
+      { center: { x: W * 0.5, z: D * 0.4 }, width: 800, bottom: 0, top: 2000, type: 'archway' },
+    ];
+    let pillars: LiveRoom['pillars'] = [
+      { center: { x: W * 0.3, z: 350 }, shape: 'round', width: lerp(300, 700), depth: 0, rotation: 0 },
+      { center: { x: W * 0.25, z: D * 0.35 }, shape: 'box', width: lerp(300, 600), depth: lerp(300, 600), rotation: lerp(-0.7, 0.7) },
+    ];
+    if (k % 4 === 3) {
+      const deg = lerp(-40, 40);
+      polygon = polygon.map((p) => turn(p, deg));
+      zones = zones.map((z) => ({ ...z, polygon: z.polygon.map((p) => turn(p, deg)) }));
+      openings = openings.map((o) => ({ ...o, center: turn(o.center, deg) }));
+      pillars = pillars.map((c) => ({ ...c, center: turn(c.center, deg), rotation: c.rotation + (deg * Math.PI) / 180 }));
+    }
+    // The walls seen: all of them a little short of the corners, one missing,
+    // or none given (everything drawn).
+    const edges = polygon.map((a, i) => {
+      const b = polygon[(i + 1) % polygon.length];
+      const L = Math.hypot(b.x - a.x, b.z - a.z);
+      const u = { x: (b.x - a.x) / L, z: (b.z - a.z) / L };
+      const cut = Math.min(150, L / 4);
+      return { a: { x: a.x + u.x * cut, z: a.z + u.z * cut }, b: { x: b.x - u.x * cut, z: b.z - u.z * cut } };
+    });
+    const walls = k % 3 === 0 ? edges : k % 3 === 1 ? edges.filter((_, i) => i !== k % edges.length) : undefined;
+    out.push({ polygon: k % 5 === 4 ? [...polygon].reverse() : polygon, ...(walls ? { walls } : {}), ceiling: H, zones, openings, pillars });
+  }
+  for (const m of measured) out.push({ polygon: m.polygon, ceiling: m.height, zones: m.zones, openings: [], pillars: [] });
+  return out;
+}
+
+/**
+ * Runs of updates as RoomPlan and the preview give them: named walls and
+ * doors with jitter, wild readings and misses; unnamed bulkheads, glass and
+ * columns found by where they are, re-traced with another number of corners.
+ */
+function trackerRuns(rnd: () => number): TrackItem[][][] {
+  const gauss = () => Math.sqrt(-2 * Math.log(Math.max(1e-12, rnd()))) * Math.cos(2 * Math.PI * rnd());
+  const runs: TrackItem[][][] = [];
+  for (let r = 0; r < 12; r++) {
+    const run: TrackItem[][] = [];
+    const sigma = 5 + 10 * r;
+    for (let k = 0; k < 80; k++) {
+      const j = (s: number) => gauss() * s + (rnd() < 0.03 ? (rnd() < 0.5 ? -250 : 250) : 0);
+      const items: TrackItem[] = [];
+      for (let w = 0; w < 4; w++) {
+        if (rnd() < 0.06) continue;
+        const shift = k > 40 && w === r % 4 ? 180 : 0;
+        items.push({ kind: 'wall', key: `w${w}`, values: [w * 1000 + j(sigma), shift + j(sigma), w * 1000 + 3000 + j(sigma), shift + j(sigma), 2700 + j(sigma), 2700 + j(sigma)] });
+      }
+      if (rnd() > 0.3) items.push({ kind: 'door', key: 'd', values: [1500 + j(sigma), j(sigma), 900 + j(sigma), 100 + j(2 * sigma), 2100 + j(2 * sigma)] });
+      if (k > 20) {
+        const corners = k > 50 ? 3 : 2;
+        const zone = [2000 + j(sigma), 600 + j(sigma), 2350 + j(sigma)];
+        for (let c = 0; c < corners; c++) zone.push(c * 1000 + j(sigma), 500 + j(sigma));
+        items.push({ kind: 'zone', values: zone });
+        items.push({ kind: 'zone', values: [5000 + j(sigma), 3000 + j(sigma), 2500 + j(sigma)] });
+      }
+      if (rnd() > 0.2) items.push({ kind: 'pillar-round', values: [2500 + j(sigma), 1800 + j(sigma), 600 + j(sigma), 600 + j(sigma), 0] });
+      // Same kind, close together: matched nearest first.
+      items.push({ kind: 'glass', values: [300 + j(sigma), 0 + j(sigma), 1200, 0, 2400] });
+      items.push({ kind: 'glass', values: [650 + j(sigma), 0 + j(sigma), 1200, 0, 2400] });
+      run.push(rnd() < 0.5 ? items : items.reverse());
+    }
+    runs.push(run);
+  }
+  return runs;
 }
 
 function images(): DetectorImage[] {
@@ -115,6 +269,13 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
   const walls = Array.from({ length: ROOMS }, () => room(rnd).segments);
   const glass = Array.from({ length: 100 }, () => glassCase(rnd));
   const sims = simCases(rnd);
+  const ceilings = ceilingCases();
+  const measured = ceilings.map((c) => {
+    const f = findCeiling(c.rays as DepthRay[], c.polygon, c.exclude);
+    return { polygon: c.polygon, zones: f?.zones ?? [], height: f?.height ?? 2700 };
+  });
+  const rooms = liveRooms(rnd, measured);
+  const runs = trackerRuns(rnd);
   const imgs = images();
   const gray = imgs.map((img) => ({
     width: img.width,
@@ -129,10 +290,13 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
         glass: [...glass, ...sims.map(({ rays, polygon, ceilingMm, existing }) => ({ rays, polygon, ceilingMm, existing }))],
         pillars: sims.map(({ rays, polygon, ceilingMm, exclude }) => ({ rays, polygon, ceilingMm, exclude })),
         images: gray,
+        ceilings: ceilings.map(({ rays, polygon, exclude }) => ({ rays, polygon, exclude })),
+        liveRooms: rooms,
+        trackerRuns: runs,
       }),
       maxBuffer: 1 << 28,
     }).toString())
-    : { walls: [], glass: [], pillars: [], detections: [] };
+    : { walls: [], glass: [], pillars: [], detections: [], ceilings: [], liveLines: [], tracked: [] };
 
   it(`on ${ROOMS} rooms: outline, pillars and clutter`, () => {
     const diffs: number[] = [];
@@ -169,7 +333,7 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
     expect(diffs).toEqual([]);
   });
 
-  it('on 16 simulated walks: glass by day and night (confidence and brightness included)', () => {
+  it('on 20 simulated walks: glass by day and night (confidence and brightness included)', () => {
     const diffs: number[] = [];
     let found = 0;
     sims.forEach((g, i) => {
@@ -181,8 +345,66 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
         close(o.width, sw[k].width) && close(o.height, sw[k].height) && close(o.sill, sw[k].sill ?? 0));
       if (!same) diffs.push(i);
     });
-    expect(found, 'the walks find glass at all, so agreement means something').toBeGreaterThanOrEqual(12);
+    expect(found, 'the walks find glass at all, so agreement means something').toBeGreaterThanOrEqual(15);
     expect(diffs).toEqual([]);
+  });
+
+  it('on 4 ceilings: mesh, bulkheads straight, angled and L-shaped, a turned room', () => {
+    const diffs: number[] = [];
+    let zones = 0;
+    ceilings.forEach((c, i) => {
+      const ts = findCeiling(c.rays as DepthRay[], c.polygon, c.exclude);
+      const sw = out.ceilings[i];
+      zones += ts?.zones.length ?? 0;
+      const same = ts === null
+        ? sw === null
+        : sw !== null && close(ts.height, sw.height) &&
+          (ts.seeThroughTo === null ? sw.seeThroughTo == null : close(ts.seeThroughTo, sw.seeThroughTo)) &&
+          ts.zones.length === sw.zones.length &&
+          ts.zones.every((z, k) => close(z.height, sw.zones[k].height) &&
+            z.polygon.length === sw.zones[k].polygon.length &&
+            z.polygon.every((p, j) => close(p.x, sw.zones[k].polygon[j].x) && close(p.z, sw.zones[k].polygon[j].z)));
+      if (!same) diffs.push(i);
+    });
+    expect(zones, 'the ceilings show bulkheads at all, so agreement means something').toBeGreaterThanOrEqual(3);
+    expect(diffs).toEqual([]);
+  });
+
+  it(`on ${rooms.length} rooms: the lines the scan screen draws`, () => {
+    const diffs: number[] = [];
+    let steps = 0;
+    const same3 = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+      close(a.x, b.x) && close(a.y, b.y) && close(a.z, b.z);
+    rooms.forEach((room, i) => {
+      const ts = buildLiveLines(room);
+      const sw = out.liveLines[i];
+      steps += ts.filter((l) => l.kind === 'ceiling' && l.a.x === l.b.x && l.a.z === l.b.z).length;
+      const same = ts.length === sw.length && ts.every((l, k) =>
+        l.kind === sw[k].kind && same3(l.a, sw[k].a) && same3(l.b, sw[k].b));
+      if (!same) diffs.push(i);
+    });
+    expect(steps, 'the rooms step their wall tops at all, so agreement means something').toBeGreaterThanOrEqual(30);
+    expect(diffs, `rooms that differ: ${diffs.slice(0, 10).join(', ')}`).toEqual([]);
+  });
+
+  it('on 12 runs of updates: what the tracker holds still, and when', () => {
+    const diffs: string[] = [];
+    let moved = 0;
+    runs.forEach((run, r) => {
+      const tracker = new SurfaceTracker();
+      run.forEach((items, k) => {
+        const ts = tracker.update(items);
+        const sw = out.tracked[r][k];
+        if (k > 0) moved += ts.filter((t) => t.locked).length;
+        const same = ts.length === sw.length && ts.every((t, n) =>
+          t.id === sw[n].id && t.kind === sw[n].kind && (t.key ?? null) === (sw[n].key ?? null) &&
+          t.locked === sw[n].locked && t.seen === sw[n].seen &&
+          t.values.length === sw[n].values.length && t.values.every((v, m) => close(v, sw[n].values[m])));
+        if (!same) diffs.push(`${r}/${k}`);
+      });
+    });
+    expect(moved, 'items lock at all').toBeGreaterThan(100);
+    expect(diffs.slice(0, 10)).toEqual([]);
   });
 
   it('on the same walks: columns from the depth readings', () => {

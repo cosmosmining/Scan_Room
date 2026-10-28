@@ -1,10 +1,11 @@
 import type { MountType, ModuleInstance } from '@/lib/types';
 import { checkClearances, detectCollisions } from './constraints';
 import { detectFixtureConflicts, detectOpeningObstruction } from './fixtures';
-import { packRun, placementToInstance } from './pack';
+import { packRun, placementToInstance, yBand } from './pack';
 import { buildRuns } from './runs';
 import {
   DEFAULT_RULES,
+  type Blocker,
   type LayoutFixture,
   type LayoutRequest,
   type LayoutResult,
@@ -12,6 +13,7 @@ import {
   type Placement,
   type PlacementModule,
   type Violation,
+  type WallRun,
 } from './types';
 
 /** Fixtures to validate against: an explicit list, else the room's wall fixtures. */
@@ -44,6 +46,31 @@ const FLOOR_BAND: MountType[] = ['floor', 'countertop'];
 const bandOf = (mount: MountType): 'floor' | 'wall' =>
   FLOOR_BAND.includes(mount) ? 'floor' : 'wall';
 
+/**
+ * Where two active walls meet, the run starting at the corner keeps clear of
+ * the units on the run ending there. The flat corner reserve assumes those are
+ * no deeper than it is; a 650 mm fridge against a 600 mm reserve reached 50 mm
+ * into the next run, and every U-shaped plan collided at that corner.
+ */
+function reserveCornersForDepth(
+  runs: Map<string, WallRun>,
+  request: LayoutRequest,
+  rules: LayoutRules,
+): void {
+  for (const assignment of request.assignments) {
+    const run = runs.get(assignment.wallId);
+    if (!run) continue;
+    for (const other of request.assignments) {
+      const o = other.wallId === assignment.wallId ? undefined : runs.get(other.wallId);
+      if (!o) continue;
+      const oEnd = { x: o.origin.x + o.dir.x * o.length, z: o.origin.z + o.dir.z * o.length };
+      if (Math.hypot(oEnd.x - run.origin.x, oEnd.z - run.origin.z) >= 1) continue;
+      const deepest = Math.max(0, ...other.modules.map((m) => m.depth));
+      run.usableStart = Math.max(run.usableStart, rules.wallGap + deepest);
+    }
+  }
+}
+
 export interface LayoutStrategy {
   generate(request: LayoutRequest): LayoutResult;
 }
@@ -60,7 +87,12 @@ export class GreedyStrategy implements LayoutStrategy {
   generate(request: LayoutRequest): LayoutResult {
     const rules: LayoutRules = { ...DEFAULT_RULES, ...request.rules };
     const activeWallIds = request.assignments.map((a) => a.wallId);
-    const runs = buildRuns(request.room, activeWallIds, rules);
+    const fixtures = resolveFixtures(request);
+    const runs = buildRuns(request.room, activeWallIds, rules, {
+      fixtures,
+      obstacles: request.obstacles,
+    });
+    reserveCornersForDepth(runs, request, rules);
 
     const placements: Placement[] = [];
     const unplaced: PlacementModule[] = [];
@@ -75,19 +107,37 @@ export class GreedyStrategy implements LayoutStrategy {
       // units rather than queueing after them along the wall.
       const floorBand = assignment.modules.filter((m) => bandOf(m.mount) === 'floor');
       const wallBand = assignment.modules.filter((m) => bandOf(m.mount) === 'wall');
-      for (const band of [floorBand, wallBand]) {
-        if (band.length === 0) continue;
-        const packed = packRun(run, band, rules);
-        placements.push(...packed.placements);
-        unplaced.push(...packed.unplaced);
-      }
+      const floorPacked = packRun(run, floorBand, rules);
+      placements.push(...floorPacked.placements);
+      unplaced.push(...floorPacked.unplaced);
+      // The bands share the wall, so what the floor band put there stands in
+      // the wall band's way where it reaches up into it: a tall unit or a
+      // fridge. Without this a wall cabinet was hung straight into the larder.
+      const wallRun: WallRun = {
+        ...run,
+        blocked: [
+          ...run.blocked,
+          ...floorPacked.placements.map((p): Blocker => {
+            const band = yBand(p.module);
+            return {
+              kind: 'unit',
+              start: p.offset,
+              end: p.offset + p.module.width,
+              bottom: band.start,
+              top: band.end,
+            };
+          }),
+        ],
+      };
+      const wallPacked = packRun(wallRun, wallBand, rules);
+      placements.push(...wallPacked.placements);
+      unplaced.push(...wallPacked.unplaced);
     }
 
     const instances: ModuleInstance[] = placements.map((p) =>
       placementToInstance(p),
     );
 
-    const fixtures = resolveFixtures(request);
     const violations: Violation[] = [
       ...detectCollisions(placements, instances),
       ...checkClearances(placements, instances, rules),

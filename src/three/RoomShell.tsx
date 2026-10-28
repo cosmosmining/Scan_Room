@@ -1,11 +1,12 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { Room, Wall, WallOpening } from '@/lib/types';
+import type { CeilingZone, Room, Wall, WallOpening } from '@/lib/types';
 import { TRIM_COLOR, type SurfaceFinish } from '@/systems/aesthetic/finishes';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 import { useFinishMaterial } from './finishMaterial';
 import { roomBounds } from './units';
+import { bulkheadGeometry } from './bulkhead';
 
 /**
  * Read a room finish out of the store. A hook rather than a prop so every
@@ -81,11 +82,28 @@ export function RoomShell({ room }: { room: Room }) {
         />
       )}
 
+      {/* Bulkheads the scan found hang from the ceiling at their measured
+          height; a recess (higher than the ceiling) needs nothing drawn. */}
+      {room.ceiling?.zones
+        .filter((zone) => zone.height < height - 20)
+        .map((zone, i) => (
+          <Bulkhead key={`bulkhead_${i}`} zone={zone} top={height} material={ceilingMaterial} />
+        ))}
+
       {room.walls.map((wall) => (
         <WallMesh key={wall.id} wall={wall} finish={wallFinish} room={room} />
       ))}
     </group>
   );
+}
+
+function Bulkhead({ zone, top, material }: { zone: CeilingZone; top: number; material: THREE.Material }) {
+  const geometry = useMemo(
+    () => bulkheadGeometry(zone.polygon, Math.max(0, zone.height), top),
+    [zone.polygon, zone.height, top],
+  );
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <mesh castShadow receiveShadow geometry={geometry} material={material} />;
 }
 
 /**

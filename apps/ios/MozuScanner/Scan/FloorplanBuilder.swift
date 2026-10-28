@@ -25,7 +25,7 @@ enum FloorplanBuilder {
         sightings: [FixtureSighting] = [],
         rays: [DepthSample] = []
     ) -> RoomScan {
-        let height = ceilingHeightMm(room.walls)
+        let wallHeight = ceilingHeightMm(room.walls)
         let floorY = floorYMm(room.walls)
         // Clutter out by height, pillars out as structure, the outline from the
         // rest — see `WallLoop.analyse`.
@@ -35,6 +35,21 @@ enum FloorplanBuilder {
         let recognised = mapOpenings(room, to: finalPolygon, floorYMm: floorY)
         let scanned = room.objects.map(scanObject(from:))
         let depth = rays.map { ray($0, floorYMm: floorY) }
+        // The ceiling from the readings overhead: where it drops (a bulkhead
+        // along the windows) or rises, whatever the shape of its edge, and its
+        // real height — through an expanded-metal mesh RoomPlan's walls can run
+        // on up to the slab. Trusted when it is a height a ceiling can be:
+        // not above the walls, not far below them.
+        let ceiling = CeilingFinder.ceiling(
+            rays: depth, polygon: finalPolygon,
+            exclude: scanned.map(footprint) + analysis.pillars.map(pillarFootprint)
+        )
+        var trusted: CeilingFinder.Analysis?
+        if let c = ceiling {
+            let h: Double = c.height
+            if h >= 1800, h <= wallHeight + 300, h >= wallHeight - 1500 { trusted = c }
+        }
+        let height: Double = trusted?.height ?? wallHeight
         // Glass RoomPlan did not recognise: readings that went through the
         // finished walls, or found nothing to measure where a wall should be.
         // Suggestions — see `GlassFinder` on mirrors. RoomPlan's televisions go
@@ -48,16 +63,25 @@ enum FloorplanBuilder {
         let openings = recognised + glass
         // Columns: RoomPlan's surfaces where it reported them, the depth
         // readings for the ones it saw one face of or missed altogether.
-        let pillars = PillarFinder.merge(
-            fromWalls: analysis.pillars,
-            fromDepth: PillarFinder.pillars(
-                rays: depth,
-                polygon: finalPolygon,
-                ceilingMm: height,
-                exclude: scanned.map(footprint)
-            )
+        let fromDepth = PillarFinder.pillars(
+            rays: depth,
+            polygon: finalPolygon,
+            ceilingMm: height,
+            exclude: scanned.map(footprint)
         )
+        let pillars = PillarFinder.merge(fromWalls: analysis.pillars, fromDepth: fromDepth)
         let objects = scanned + pillars.map { column($0, heightMm: height) }
+        // A column only the depth readings found runs up through the ceiling
+        // too, and its sides overhead must not read as a bulkhead: look at the
+        // ceiling again without it. The height stays the one the glass and the
+        // columns were found under.
+        if let first = trusted, !fromDepth.isEmpty,
+           let again = CeilingFinder.ceiling(
+               rays: depth, polygon: finalPolygon,
+               exclude: scanned.map(footprint) + (analysis.pillars + fromDepth).map(pillarFootprint)
+           ) {
+            trusted = CeilingFinder.Analysis(height: first.height, seeThroughTo: again.seeThroughTo, zones: again.zones)
+        }
         // Measured tracks when there were any; the ray-cast fallback only for a
         // session that never gave us depth.
         let fixtures: [ScanFixture]
@@ -76,6 +100,13 @@ enum FloorplanBuilder {
                 floorYMm: floorY
             )
         }
+        var ceilingDetail: ScanCeiling?
+        if let c = trusted, !c.zones.isEmpty || c.seeThroughTo != nil {
+            ceilingDetail = ScanCeiling(
+                zones: c.zones.map { ScanCeilingZone(polygon: $0.polygon, height: $0.height) },
+                seeThroughTo: c.seeThroughTo
+            )
+        }
         return RoomScan(
             polygon: finalPolygon,
             height: height,
@@ -83,7 +114,8 @@ enum FloorplanBuilder {
             objects: objects,
             fixtures: fixtures,
             source: .roomplan,
-            confidence: 0.92
+            confidence: 0.92,
+            ceiling: ceilingDetail
         )
     }
 
@@ -102,10 +134,23 @@ enum FloorplanBuilder {
         var wallPillars: [WallLoop.Pillar]
     }
 
-    /// Glass and columns found so far, for the scan screen.
+    /// Glass and columns found so far, for the scan screen — counted for the
+    /// chip, and in full for the steady lines.
     struct Preview {
         var glass: Int
         var pillars: Int
+        /// The outline the finders worked against; `glassOpenings` are spans
+        /// of its walls.
+        var polygon: [Vec2]
+        var floorYMm: Double
+        /// Panes the depth readings saw through.
+        var glassOpenings: [ScanOpening]
+        /// Columns only the depth readings found (RoomPlan's own come from
+        /// the walls the screen is drawing).
+        var depthPillars: [WallLoop.Pillar]
+        /// The ceiling — height, bulkheads, mesh — when its height is one a
+        /// ceiling can be.
+        var ceiling: CeilingFinder.Analysis?
     }
 
     static func previewInput(from room: CapturedRoom) -> PreviewInput? {
@@ -128,19 +173,90 @@ enum FloorplanBuilder {
     }
 
     /// The same finders `roomScan` runs, on the room so far. Pure: safe off the
-    /// main thread.
-    static func preview(_ input: PreviewInput, samples: [DepthSample]) -> Preview {
+    /// main thread. `overhead` is a thinned run of the readings that landed up
+    /// near the ceiling, so the ceiling is found from as many of them as the
+    /// glass and the columns get of all of them.
+    static func preview(_ input: PreviewInput, samples: [DepthSample], overhead: [DepthSample] = []) -> Preview {
         let depth = samples.map { ray($0, floorYMm: input.floorYMm) }
         let glass = GlassFinder.openings(
             rays: depth, polygon: input.polygon, ceilingMm: input.ceilingMm, existing: input.known
         )
-        let pillars = PillarFinder.merge(
-            fromWalls: input.wallPillars,
-            fromDepth: PillarFinder.pillars(
-                rays: depth, polygon: input.polygon, ceilingMm: input.ceilingMm, exclude: input.footprints
-            )
+        let fromDepth = PillarFinder.pillars(
+            rays: depth, polygon: input.polygon, ceilingMm: input.ceilingMm, exclude: input.footprints
         )
-        return Preview(glass: input.windows + glass.count, pillars: pillars.count)
+        let pillars = PillarFinder.merge(fromWalls: input.wallPillars, fromDepth: fromDepth)
+        var ceiling: CeilingFinder.Analysis?
+        if !overhead.isEmpty, let c = CeilingFinder.ceiling(
+            rays: overhead.map { ray($0, floorYMm: input.floorYMm) },
+            polygon: input.polygon,
+            exclude: input.footprints + (input.wallPillars + fromDepth).map(pillarFootprint)
+        ) {
+            let h: Double = c.height
+            if h >= 1800, h <= input.ceilingMm + 300, h >= input.ceilingMm - 1500 { ceiling = c }
+        }
+        return Preview(
+            glass: input.windows + glass.count, pillars: pillars.count,
+            polygon: input.polygon, floorYMm: input.floorYMm,
+            glassOpenings: glass, depthPillars: fromDepth, ceiling: ceiling
+        )
+    }
+
+    // MARK: Steady lines
+
+    /// A wall as the scan screen tracks it: RoomPlan's identifier for it (and
+    /// which facet, for a curved one), its ends on the plan, its height, and
+    /// its top in world millimetres — the floor is tracked on its own, and
+    /// taken off when the lines are drawn.
+    struct LiveWall {
+        var key: String
+        var a: Vec2
+        var b: Vec2
+        var heightMm: Double
+        var topWorldMm: Double
+    }
+
+    static func liveWalls(_ walls: [CapturedRoom.Surface]) -> [LiveWall] {
+        walls.flatMap { wall -> [LiveWall] in
+            let heightMm = Double(wall.dimensions.y) * 1000
+            let topWorldMm = Double(wall.transform.columns.3.y) * 1000 + heightMm / 2
+            let id = wall.identifier.uuidString
+            return facets(wall).enumerated().map { k, f in
+                LiveWall(key: "\(id)#\(k)", a: f.a, b: f.b, heightMm: heightMm, topWorldMm: topWorldMm)
+            }
+        }
+    }
+
+    /// A door, window or opening as the scan screen tracks it: its centre on
+    /// the plan, its width, and its bottom and top in world millimetres.
+    struct LiveOpening {
+        var key: String
+        /// "door", "window" or "archway".
+        var type: String
+        var center: Vec2
+        var width: Double
+        var bottomWorldMm: Double
+        var topWorldMm: Double
+    }
+
+    static func liveOpenings(_ room: CapturedRoom) -> [LiveOpening] {
+        let tagged: [(String, [CapturedRoom.Surface])] = [
+            ("door", room.doors), ("window", room.windows), ("archway", room.openings),
+        ]
+        var out: [LiveOpening] = []
+        for (kind, surfaces) in tagged {
+            for s in surfaces {
+                let t = s.transform
+                let h = Double(s.dimensions.y) * 1000
+                let cy = Double(t.columns.3.y) * 1000
+                out.append(LiveOpening(
+                    key: s.identifier.uuidString, type: kind,
+                    center: mm(SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)),
+                    width: Double(s.dimensions.x) * 1000,
+                    bottomWorldMm: cy - h / 2, topWorldMm: cy + h / 2
+                ))
+            }
+        }
+        return out
     }
 
     // MARK: Wall endpoints → ordered loop
@@ -253,14 +369,21 @@ enum FloorplanBuilder {
                 // width. Emitting the centre here shifted every door and window
                 // by half its width once the scan reached the web floorplan.
                 let offset = max(0, dot(Geo.sub(center, start), dir) - width / 2)
-                let height = Double(s.dimensions.y) * 1000
+                let boxHeight = Double(s.dimensions.y) * 1000
                 // World Y is measured from wherever the session started (about
                 // chest height), not from the floor, so the floor comes off
                 // first. Without it every window's sill was ~1.3m too low —
                 // usually clamped to 0, i.e. windows drawn down to the floor.
-                let sill = kind == .window
-                    ? max(0, Double(t.columns.3.y) * 1000 - height / 2 - floorYMm)
-                    : 0
+                let bottom: Double = Double(t.columns.3.y) * 1000 - boxHeight / 2 - floorYMm
+                let top: Double = bottom + boxHeight
+                let sill = kind == .window ? max(0, bottom) : 0
+                // A door or an archway stands on the floor. RoomPlan often
+                // fits its box short of the floor, and taking that box's
+                // height put the door's head line below the real one once the
+                // door was stood on the floor. Keep the head where RoomPlan saw
+                // it and run the door down to the floor — by at most 600 mm,
+                // in case the floor itself was misjudged.
+                let height: Double = kind == .window ? boxHeight : min(max(boxHeight, top), boxHeight + 600)
                 result.append(ScanOpening(
                     type: kind, wall: edge,
                     offset: offset, width: width, height: height, sill: sill
@@ -322,6 +445,11 @@ enum FloorplanBuilder {
     /// A scanned object's footprint, for `PillarFinder` to leave alone.
     private static func footprint(_ o: ScanObject) -> PillarFinder.Footprint {
         PillarFinder.Footprint(center: o.center, width: o.width, depth: o.depth, rotation: o.rotation)
+    }
+
+    /// A column's footprint, for `CeilingFinder` to leave alone.
+    private static func pillarFootprint(_ p: WallLoop.Pillar) -> PillarFinder.Footprint {
+        PillarFinder.Footprint(center: p.center, width: p.width, depth: p.depth, rotation: p.rotation)
     }
 
     private static func known(_ o: ScanOpening) -> GlassFinder.Known {

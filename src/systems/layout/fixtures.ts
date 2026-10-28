@@ -1,5 +1,5 @@
 import type { FixtureType, ModuleInstance } from '@/lib/types';
-import { bandsOverlap, yBand } from './pack';
+import { bandsOverlap, blocks, yBand } from './pack';
 import type {
   LayoutFixture,
   LayoutRules,
@@ -81,7 +81,8 @@ export function detectFixtureConflicts(
         });
       } else {
         const clr = clearanceFor(f.type, rules);
-        if (f.offset >= start - clr && f.offset <= end + clr) {
+        // Strictly inside: a unit exactly at the edge of the gap leaves it clear.
+        if (f.offset > start - clr && f.offset < end + clr) {
           out.push({
             kind: 'fixture-clearance',
             severity: 'warning',
@@ -118,10 +119,11 @@ export function detectFixtureConflicts(
 }
 
 /**
- * Floor-standing units that stand across a door / low window. The packer already
- * routes around a run's `blocked` intervals, so this is a no-op for generated
- * layouts — its job is to catch a MANUALLY dragged / snapped unit that lands over
- * an opening.
+ * Units that stand across a door or window, or into a column — by the same
+ * {@link blocks} rule the packer routes around, so this is a no-op for
+ * generated layouts. Its job is to catch a MANUALLY dragged / snapped unit
+ * that lands over one. (A wall cabinet over a window counts now; it used to
+ * be waved through as "clearing the doorway".)
  */
 export function detectOpeningObstruction(
   placements: Placement[],
@@ -130,15 +132,20 @@ export function detectOpeningObstruction(
   const out: Violation[] = [];
   for (let i = 0; i < placements.length; i++) {
     const p = placements[i];
-    if ((p.module.elevation ?? 0) >= 100) continue; // wall units clear the doorway
     const start = p.offset;
     const end = p.offset + p.module.width;
     for (const b of p.run.blocked) {
-      if (start < b.end && end > b.start) {
+      // Fixtures have their own, finer report; units are each other's business
+      // (collisions). Old-style blockers without a kind are openings.
+      if (b.kind === 'fixture' || b.kind === 'unit') continue;
+      if (start < b.end && end > b.start && blocks(b, p.module)) {
         out.push({
           kind: 'obstruction',
           severity: 'error',
-          message: `${p.module.definitionId} stands across an opening on ${p.run.wallId}`,
+          message:
+            b.kind === 'column'
+              ? `${p.module.definitionId} stands into a column on ${p.run.wallId}`
+              : `${p.module.definitionId} stands across an opening on ${p.run.wallId}`,
           instanceIds: [instances[i].id],
         });
         break;

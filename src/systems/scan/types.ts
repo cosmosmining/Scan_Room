@@ -1,6 +1,7 @@
 import type {
   FixtureScanSummary,
   Millimeters,
+  RoomCeiling,
   RoomSource,
   UnitSystem,
   Vec3,
@@ -38,6 +39,8 @@ export interface RoomGeometry {
   fixtureScan?: FixtureScanSummary;
   /** Ceiling height. */
   height: Millimeters;
+  /** Bulkheads, recesses and a see-through ceiling, when the scan found them. */
+  ceiling?: RoomCeiling;
   /** Display preference captured at input time. */
   unitSystem: UnitSystem;
   /** Domain-level provenance. */

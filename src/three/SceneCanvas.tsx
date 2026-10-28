@@ -1,14 +1,25 @@
 'use client';
 
-import { Canvas } from '@react-three/fiber';
-import { useEffect, useState } from 'react';
-import * as THREE from 'three';
+import dynamic from 'next/dynamic';
+import { useEffect } from 'react';
 import { FloorplanView } from '@/components/room/FloorplanView';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 import { PlanEditor } from '@/components/room/PlanEditor';
-import { Scene } from './Scene';
 import { ViewerControls } from './ViewerControls';
 import { roomCenterM } from './units';
+
+/**
+ * three.js and the scene, fetched the first time the 3D view is shown and
+ * never rendered on the server (there is no WebGL there).
+ */
+const Viewport3D = dynamic(() => import('./Viewport3D'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full w-full items-center justify-center text-sm text-neutral-500">
+      Loading viewport…
+    </div>
+  ),
+});
 
 /**
  * 3D viewport host.
@@ -21,9 +32,6 @@ import { roomCenterM } from './units';
 export function SceneCanvas() {
   const viewMode = useConfiguratorStore((s) => s.viewMode);
   const room = useConfiguratorStore((s) => s.room);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => setMounted(true), []);
 
   // Seed a demo kitchen on first mount so the viewport shows room + modules.
   useEffect(() => {
@@ -43,28 +51,8 @@ export function SceneCanvas() {
         <FloorplanView />
       ) : viewMode === '2d' ? (
         <PlanEditor />
-      ) : mounted ? (
-        <Canvas
-          shadows
-          frameloop="demand"
-          dpr={[1, 2]}
-          // ACES filmic + sRGB is what RealityKit tonemaps through, and it is
-          // what keeps a sunlit plaster wall off pure white.
-          gl={{
-            antialias: true,
-            powerPreference: 'high-performance',
-            toneMapping: THREE.ACESFilmicToneMapping,
-            toneMappingExposure: 1.05,
-            outputColorSpace: THREE.SRGBColorSpace,
-          }}
-          camera={{ position: [cx + 3.5, 2.6, cz + 4.5], fov: 45, near: 0.1, far: 100 }}
-        >
-          <Scene />
-        </Canvas>
       ) : (
-        <div className="flex h-full w-full items-center justify-center text-sm text-neutral-500">
-          Loading viewport…
-        </div>
+        <Viewport3D cx={cx} cz={cz} />
       )}
 
       <ViewerControls />

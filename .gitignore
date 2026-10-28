@@ -37,3 +37,8 @@ yarn-error.log*
 # Playwright
 /test-results/
 /playwright-report/
+
+# iPad app: generated Xcode project and archives (scripts/testflight.sh)
+/apps/ios/MozuScanner.xcodeproj/
+/apps/ios/build/
+*.p8

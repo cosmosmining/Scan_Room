@@ -94,7 +94,10 @@ export interface GlassOptions {
   beyondMm?: number;
   /** A reading within this of the wall landed ON it. */
   onWallMm?: number;
-  /** Ignore crossings this close to a wall's ends — corners are noisy. */
+  /**
+   * Ignore readings this close to a wall's ends — the walls either side are
+   * hit there too.
+   */
   endMarginMm?: number;
   /** See-through votes a cell needs… */
   minThrough?: number;
@@ -104,6 +107,8 @@ export interface GlassOptions {
   minSideMm?: number;
   /** Fraction of the OBSERVED cells in a patch that must be see-through. */
   minFill?: number;
+  /** …and in each edge column or row, or the edge is trimmed back past it. */
+  edgeFill?: number;
   /** Total see-through votes a patch needs to be reported at all. */
   minVotes?: number;
   /**
@@ -128,13 +133,14 @@ export const GLASS_DEFAULTS: Required<GlassOptions> = {
   cellMm: 100,
   beyondMm: 300,
   onWallMm: 120,
-  endMarginMm: 150,
+  endMarginMm: 50,
   minThrough: 2,
   throughRatio: 2,
   minSideMm: 400,
   minFill: 0.6,
+  edgeFill: 0.5,
   minVotes: 24,
-  minDensity: 1,
+  minDensity: 2,
   doorSillMm: 300,
   brightLuma: 235,
   brightRangeMm: 2500,
@@ -183,6 +189,9 @@ export function findGlass(
       // solid votes, per cell.
       through: new Uint16Array(cols * rows),
       solid: new Uint16Array(cols * rows),
+      // The two nearest ranges each cell was measured solid from.
+      near1: new Float64Array(cols * rows).fill(Infinity),
+      near2: new Float64Array(cols * rows).fill(Infinity),
     };
   });
 
@@ -194,6 +203,12 @@ export function findGlass(
   const bump = (arr: Uint16Array, i: number, by: number) => {
     arr[i] = Math.min(65535, arr[i] + by);
   };
+  // No-return readings, held until every solid one is in: whether they count
+  // depends on how near the same cell was measured solid.
+  const voidWall: number[] = [];
+  const voidCell: number[] = [];
+  const voidRange: number[] = [];
+  const voidWeight: number[] = [];
 
   for (const ray of rays) {
     const { eye, hit } = ray;
@@ -217,9 +232,18 @@ export function findGlass(
       const sHit = (hit.x - w.a.x) * w.inward.x + (hit.z - w.a.z) * w.inward.z;
       const tHit = (hit.x - w.a.x) * w.d.x + (hit.z - w.a.z) * w.d.z;
 
-      // Landed ON this wall: a vote that it is solid there.
-      if (measured && Math.abs(sHit) <= o.onWallMm && tHit >= 0 && tHit <= w.length && hit.y >= 0 && hit.y <= ceilingMm) {
-        bump(w.solid, cellOf(w, tHit, hit.y), 1);
+      // Landed ON this wall: a vote that it is solid there. Not right at its
+      // ends, which is where the walls either side are hit too — counted as
+      // this wall, they made a pane that runs into the corner stop short of it.
+      if (measured && Math.abs(sHit) <= o.onWallMm && tHit >= o.endMarginMm && tHit <= w.length - o.endMarginMm && hit.y >= 0 && hit.y <= ceilingMm) {
+        const cell = cellOf(w, tHit, hit.y);
+        bump(w.solid, cell, 1);
+        if (length < w.near1[cell]) {
+          w.near2[cell] = w.near1[cell];
+          w.near1[cell] = length;
+        } else if (length < w.near2[cell]) {
+          w.near2[cell] = length;
+        }
       }
 
       if (measured) {
@@ -254,7 +278,26 @@ export function findGlass(
     const cx = eye.x + (hit.x - eye.x) * at.f;
     const cz = eye.z + (hit.z - eye.z) * at.f;
     const weight = bright && at.f * length <= o.brightRangeMm ? 2 : 1;
-    bump(w.through, cellOf(w, (cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z, y), weight);
+    const cell = cellOf(w, (cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z, y);
+    if (exit) {
+      bump(w.through, cell, weight);
+    } else {
+      voidWall.push(at.wall);
+      voidCell.push(cell);
+      voidRange.push(at.f * length);
+      voidWeight.push(weight);
+    }
+  }
+
+  // Glass in sunlight returns nothing from any distance; a solid wall in
+  // strong sun returns nothing only from far off, and is measured from nearer.
+  // So a no-return reading does not count against a cell that was measured
+  // solid — twice, so one stray reading cannot do it — from as near or nearer.
+  // It used to, and a sunlit wall beside a pane read as more pane.
+  for (let k = 0; k < voidWall.length; k++) {
+    const w = walls[voidWall[k]];
+    if (voidRange[k] >= w.near2[voidCell[k]]) continue;
+    bump(w.through, voidCell[k], voidWeight[k]);
   }
 
   const found: GlassOpening[] = [];
@@ -296,7 +339,37 @@ export function findGlass(
           }
         }
       }
-      next++;
+      const id = next++;
+
+      // Trim the outline back to the pane. Joining across gaps is what makes a
+      // sparse speckle one pane, but it also lets a stray see-through cell or
+      // two in the solid wall beside it drag an edge out — in strong sun, by
+      // half a metre. An edge column or row stays only where, of what was seen
+      // in it, most is this pane.
+      const lineFill = (cells: number[]): number => {
+        let seenHere = 0, mine = 0;
+        for (const j of cells) {
+          if (w.through[j] + w.solid[j] > 0) seenHere++;
+          if (label[j] === id) mine++;
+        }
+        return seenHere === 0 ? 0 : mine / seenHere;
+      };
+      const column = (c: number): number[] => {
+        const out: number[] = [];
+        for (let r = r0; r <= r1; r++) out.push(r * w.cols + c);
+        return out;
+      };
+      const row = (r: number): number[] => {
+        const out: number[] = [];
+        for (let c = c0; c <= c1; c++) out.push(r * w.cols + c);
+        return out;
+      };
+      while (c0 < c1 && lineFill(column(c0)) < o.edgeFill) c0++;
+      while (c1 > c0 && lineFill(column(c1)) < o.edgeFill) c1--;
+      // Not the floor or ceiling row: hits on the floor or ceiling right at the
+      // wall land there too, so glass that reaches them always looks thin.
+      while (r0 > 0 && r0 < r1 && lineFill(row(r0)) < o.edgeFill) r0++;
+      while (r1 < w.rows - 1 && r1 > r0 && lineFill(row(r1)) < o.edgeFill) r1--;
 
       const width = (c1 - c0 + 1) * o.cellMm;
       const height = (r1 - r0 + 1) * o.cellMm;

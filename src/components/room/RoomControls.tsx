@@ -1,12 +1,16 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useState } from 'react';
 import { manualDimensionsToRoomGeometry } from '@/systems/scan';
 import { useConfiguratorStore } from '@/state/useConfiguratorStore';
 import { ArMeasureButton } from './ArMeasureButton';
 import { CameraScan } from './CameraScan';
 import { FloorplanScanner } from './FloorplanScanner';
-import { LidarScan } from './LidarScan';
+
+// The LiDAR scan draws its massing model in 3D, so it brings three.js with it:
+// fetched when the scan is opened, not with the sidebar.
+const LidarScan = dynamic(() => import('./LidarScan').then((m) => m.LidarScan), { ssr: false });
 
 type Mode = 'none' | 'camera' | 'floorplan' | 'lidar';
 

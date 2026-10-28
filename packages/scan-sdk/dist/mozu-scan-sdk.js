@@ -277,6 +277,62 @@ function placeFixtures(fixtures, source, walls) {
   return out;
 }
 var floorplanCenter = (fp) => centroid(fp.points);
+function insidePolygon(p, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.z > p.z !== b.z > p.z && p.x < (b.x - a.x) * (p.z - a.z) / (b.z - a.z) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+function distanceToWalls(p, poly) {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const abx = b.x - a.x;
+    const abz = b.z - a.z;
+    const len2 = abx * abx + abz * abz;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2)) : 0;
+    best = Math.min(best, Math.hypot(p.x - (a.x + abx * t), p.z - (a.z + abz * t)));
+  }
+  return best;
+}
+function floorplanLabelPoint(fp) {
+  const poly = fp.points;
+  const fallback = centroid(poly);
+  if (poly.length < 3) return fallback;
+  const b = bounds(poly);
+  let best = insidePolygon(fallback, poly) ? fallback : null;
+  let bestD = best ? distanceToWalls(best, poly) : -1;
+  let cx = (b.minX + b.maxX) / 2;
+  let cz = (b.minZ + b.maxZ) / 2;
+  let hx = b.width / 2;
+  let hz = b.depth / 2;
+  const N = 24;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i <= N; i++) {
+      for (let j = 0; j <= N; j++) {
+        const p = { x: cx - hx + 2 * hx * i / N, z: cz - hz + 2 * hz * j / N };
+        if (!insidePolygon(p, poly)) continue;
+        const d = distanceToWalls(p, poly);
+        if (d > bestD + 1e-6) {
+          best = p;
+          bestD = d;
+        }
+      }
+    }
+    if (!best) break;
+    cx = best.x;
+    cz = best.z;
+    hx = 2 * hx / N;
+    hz = 2 * hz / N;
+  }
+  return best ?? fallback;
+}
 function polygonScan(polygon, height, unitSystem, source = "manual", confidence = 0.7) {
   return {
     schema: "mozu.roomscan/1",
@@ -474,7 +530,7 @@ function floorplanToSvg(fp, opts = {}) {
     }
   }
   if (showArea) {
-    const c = floorplanCenter(fp);
+    const c = floorplanLabelPoint(fp);
     parts.push(
       `<text x="${fmt(c.x)}" y="${fmt(c.z)}" font-size="${fmt(font * 1.05)}" font-weight="600" fill="${theme.area}" text-anchor="middle" dominant-baseline="central">${esc(formatArea(fp.areaMm2, fp.unitSystem))}</text>`
     );
@@ -550,6 +606,21 @@ var fromBase64Url = (s) => {
 function serializeScan(scan) {
   return JSON.stringify(scan);
 }
+function parseCeiling(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const c = raw;
+  const zones = [];
+  for (const z of Array.isArray(c.zones) ? c.zones : []) {
+    const zone = z;
+    const height = Number(zone.height);
+    if (!Array.isArray(zone.polygon) || !Number.isFinite(height)) continue;
+    const polygon = zone.polygon.map((p) => ({ x: Number(p?.x), z: Number(p?.z) })).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
+    if (polygon.length >= 3) zones.push({ polygon, height });
+  }
+  const seeThroughTo = Number(c.seeThroughTo);
+  if (zones.length === 0 && !Number.isFinite(seeThroughTo)) return void 0;
+  return { zones, ...Number.isFinite(seeThroughTo) ? { seeThroughTo } : {} };
+}
 function parseScan(input) {
   try {
     const raw = input.trim().startsWith("{") ? input : fromBase64Url(input);
@@ -557,6 +628,7 @@ function parseScan(input) {
     if (!Array.isArray(data.polygon) || data.polygon.length < 3) return null;
     const polygon = data.polygon.map((p) => ({ x: Number(p.x), z: Number(p.z) })).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
     if (polygon.length < 3) return null;
+    const ceiling = parseCeiling(data.ceiling);
     return {
       schema: ROOMSCAN_SCHEMA,
       polygon,
@@ -567,7 +639,8 @@ function parseScan(input) {
       source: data.source ?? "manual",
       unitSystem: data.unitSystem ?? "metric",
       confidence: typeof data.confidence === "number" ? data.confidence : 0.8,
-      capturedAt: typeof data.capturedAt === "string" ? data.capturedAt : (/* @__PURE__ */ new Date()).toISOString()
+      capturedAt: typeof data.capturedAt === "string" ? data.capturedAt : (/* @__PURE__ */ new Date()).toISOString(),
+      ...ceiling ? { ceiling } : {}
     };
   } catch {
     return null;
@@ -580,7 +653,7 @@ function handoffUrl(webBase, scan) {
   params.set("poly", polyParam(scan.polygon));
   params.set("h", String(Math.round(scan.height)));
   params.set("src", scan.source);
-  if (scan.openings.length || scan.objects.length || scan.fixtures?.length) {
+  if (scan.openings.length || scan.objects.length || scan.fixtures?.length || scan.ceiling) {
     params.set("scan", toBase64Url(serializeScan(scan)));
   }
   return `${base}/scan?${params.toString()}`;
@@ -888,6 +961,7 @@ export {
   estimateRoomFromImages,
   fixtureLabel,
   floorplanCenter,
+  floorplanLabelPoint,
   floorplanToSvg,
   formatArea,
   formatLength,

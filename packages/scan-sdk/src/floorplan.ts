@@ -184,8 +184,74 @@ function placeFixtures(
   return out;
 }
 
-/** Centre of the plan (millimetres) — where the area label is anchored. */
+/** Centre of the plan's corners (millimetres). */
 export const floorplanCenter = (fp: Floorplan): Vec2 => centroid(fp.points);
+
+function insidePolygon(p: Vec2, poly: Vec2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.z > p.z !== b.z > p.z && p.x < ((b.x - a.x) * (p.z - a.z)) / (b.z - a.z) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function distanceToWalls(p: Vec2, poly: Vec2[]): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const abx = b.x - a.x;
+    const abz = b.z - a.z;
+    const len2 = abx * abx + abz * abz;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2)) : 0;
+    best = Math.min(best, Math.hypot(p.x - (a.x + abx * t), p.z - (a.z + abz * t)));
+  }
+  return best;
+}
+
+/**
+ * Where the area label goes: the point of the floor furthest from every wall.
+ * The centre of the corners is outside an L-shaped room, or on the wall of
+ * its inside corner — which is where the label used to be drawn. A coarse grid
+ * over the plan, then a finer one around the best cell; plenty for a label.
+ */
+export function floorplanLabelPoint(fp: Floorplan): Vec2 {
+  const poly = fp.points;
+  const fallback = centroid(poly);
+  if (poly.length < 3) return fallback;
+  const b = computeBounds(poly);
+  let best = insidePolygon(fallback, poly) ? fallback : null;
+  let bestD = best ? distanceToWalls(best, poly) : -1;
+  let cx = (b.minX + b.maxX) / 2;
+  let cz = (b.minZ + b.maxZ) / 2;
+  let hx = b.width / 2;
+  let hz = b.depth / 2;
+  const N = 24;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i <= N; i++) {
+      for (let j = 0; j <= N; j++) {
+        const p = { x: cx - hx + (2 * hx * i) / N, z: cz - hz + (2 * hz * j) / N };
+        if (!insidePolygon(p, poly)) continue;
+        const d = distanceToWalls(p, poly);
+        if (d > bestD + 1e-6) {
+          best = p;
+          bestD = d;
+        }
+      }
+    }
+    if (!best) break;
+    // Refine around the best point found.
+    cx = best.x;
+    cz = best.z;
+    hx = (2 * hx) / N;
+    hz = (2 * hz) / N;
+  }
+  return best ?? fallback;
+}
 
 /** Wrap an ordered polygon (e.g. a tap-trace or AR corners) as a RoomScan. */
 export function polygonScan(

@@ -84,6 +84,23 @@ struct ScanFixture: Codable, Equatable {
     var diameterMm: Double? = nil
 }
 
+/// An area of the ceiling at another height than the rest: a bulkhead or a
+/// soffit (lower), a recess (higher). Its outline follows whatever shape it has.
+struct ScanCeilingZone: Codable, Equatable {
+    /// Counter-clockwise outline on the plan, millimetres.
+    var polygon: [Vec2]
+    /// Height of the ceiling over this area, mm off the floor.
+    var height: Double
+}
+
+/// The ceiling beyond its one height (`RoomScan.height`): where it drops or
+/// rises, and whether it is see-through (an expanded-metal mesh).
+struct ScanCeiling: Codable, Equatable {
+    var zones: [ScanCeilingZone]
+    /// For a see-through ceiling: the height of the slab seen through it.
+    var seeThroughTo: Double? = nil
+}
+
 /// The normalized capture, identical in shape to the SDK's `RoomScan`.
 struct RoomScan: Codable, Equatable {
     var schema: String = "mozu.roomscan/1"
@@ -99,6 +116,8 @@ struct RoomScan: Codable, Equatable {
     var unitSystem: String
     var confidence: Double
     var capturedAt: String
+    /// Bulkheads, recesses and a see-through ceiling, when the scan saw them.
+    var ceiling: ScanCeiling? = nil
 
     init(
         polygon: [Vec2],
@@ -109,7 +128,8 @@ struct RoomScan: Codable, Equatable {
         source: ScanSource = .roomplan,
         unitSystem: String = "metric",
         confidence: Double = 0.92,
-        capturedAt: String = ISO8601DateFormatter().string(from: Date())
+        capturedAt: String = ISO8601DateFormatter().string(from: Date()),
+        ceiling: ScanCeiling? = nil
     ) {
         self.polygon = polygon
         self.height = height
@@ -120,6 +140,7 @@ struct RoomScan: Codable, Equatable {
         self.unitSystem = unitSystem
         self.confidence = confidence
         self.capturedAt = capturedAt
+        self.ceiling = ceiling
     }
 
     /// Compact JSON (matches `serializeScan` in the SDK).

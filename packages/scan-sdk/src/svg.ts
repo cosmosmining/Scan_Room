@@ -8,7 +8,7 @@
  */
 import { add, distance, midpoint, normalize, scale, sub } from './geometry';
 import { formatArea, formatLength } from './format';
-import { floorplanCenter } from './floorplan';
+import { floorplanLabelPoint } from './floorplan';
 import { FIXTURE_GLYPH } from './fixtures';
 import type { Floorplan, FloorplanFixture, ScanOpening, Vec2 } from './types';
 
@@ -173,7 +173,7 @@ export function floorplanToSvg(fp: Floorplan, opts: FloorplanSvgOptions = {}): s
 
   // Area + height summary.
   if (showArea) {
-    const c = floorplanCenter(fp);
+    const c = floorplanLabelPoint(fp);
     parts.push(
       `<text x="${fmt(c.x)}" y="${fmt(c.z)}" font-size="${fmt(font * 1.05)}" font-weight="600" fill="${theme.area}" ` +
         `text-anchor="middle" dominant-baseline="central">${esc(formatArea(fp.areaMm2, fp.unitSystem))}</text>`,

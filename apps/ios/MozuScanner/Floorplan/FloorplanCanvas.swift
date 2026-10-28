@@ -91,6 +91,27 @@ struct FloorplanCanvas: View {
         context.fill(poly, with: .color(theme.floor))
         context.stroke(poly, with: .color(theme.wall), style: StrokeStyle(lineWidth: wallPx, lineJoin: .miter))
 
+        // The ceiling's bulkheads and recesses, in the shape the scan found
+        // (angled and L-shaped edges included), dashed because they are
+        // overhead, labelled with the height under them.
+        for zone in fp.ceiling?.zones ?? [] where zone.polygon.count >= 3 {
+            var outline = Path()
+            outline.addLines(zone.polygon.map(p))
+            outline.closeSubpath()
+            let lower = zone.height < fp.height
+            let tone = lower ? Color(red: 0.85, green: 0.47, blue: 0.02) : theme.selection
+            context.fill(outline, with: .color(tone.opacity(0.08)))
+            context.stroke(outline, with: .color(tone), style: StrokeStyle(lineWidth: thin * 1.4, lineJoin: .round, dash: [thin * 5, thin * 3]))
+            let n = Double(zone.polygon.count)
+            let mid = Vec2(x: zone.polygon.map(\.x).reduce(0, +) / n, z: zone.polygon.map(\.z).reduce(0, +) / n)
+            context.draw(
+                Text("\(lower ? "bulkhead" : "recess") \(Units.length(zone.height, fp.unitSystem))")
+                    .font(.system(size: fontPx * 0.5))
+                    .foregroundColor(tone),
+                at: p(mid)
+            )
+        }
+
         // Objects (furniture), and columns — solid, in the wall colour, because
         // they are structure rather than something that will be moved.
         for (i, o) in fp.objects.enumerated() {
@@ -197,6 +218,12 @@ struct FloorplanCanvas: View {
             Text("ceiling \(Units.length(fp.height, fp.unitSystem))").font(.system(size: fontPx * 0.6)).foregroundColor(theme.dimension),
             at: CGPoint(x: c.x, y: c.y + fontPx * 1.3)
         )
+        if let slab = fp.ceiling?.seeThroughTo {
+            context.draw(
+                Text("mesh ceiling · slab \(Units.length(slab, fp.unitSystem))").font(.system(size: fontPx * 0.5)).foregroundColor(theme.dimension),
+                at: CGPoint(x: c.x, y: c.y + fontPx * 2.1)
+            )
+        }
     }
 
     private func objectPath(_ o: ScanObject, transform p: (Vec2) -> CGPoint) -> Path {

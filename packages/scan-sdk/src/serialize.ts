@@ -6,7 +6,7 @@
  * objects) when present.
  */
 import { ROOMSCAN_SCHEMA } from './types';
-import type { RoomScan, ScanSource, UnitSystem, Vec2 } from './types';
+import type { RoomScan, ScanCeiling, ScanCeilingZone, ScanSource, UnitSystem, Vec2 } from './types';
 
 const toBase64Url = (s: string): string => {
   const b64 =
@@ -31,6 +31,25 @@ export function serializeScan(scan: RoomScan): string {
 }
 
 /** Parse a serialized scan; returns null if it isn't a valid v1 RoomScan. */
+/** The ceiling detail, if it is well formed; anything malformed is dropped, not the scan. */
+function parseCeiling(raw: unknown): ScanCeiling | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as { zones?: unknown; seeThroughTo?: unknown };
+  const zones: ScanCeilingZone[] = [];
+  for (const z of Array.isArray(c.zones) ? c.zones : []) {
+    const zone = z as { polygon?: unknown; height?: unknown };
+    const height = Number(zone.height);
+    if (!Array.isArray(zone.polygon) || !Number.isFinite(height)) continue;
+    const polygon = zone.polygon
+      .map((p: { x?: unknown; z?: unknown }) => ({ x: Number(p?.x), z: Number(p?.z) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
+    if (polygon.length >= 3) zones.push({ polygon, height });
+  }
+  const seeThroughTo = Number(c.seeThroughTo);
+  if (zones.length === 0 && !Number.isFinite(seeThroughTo)) return undefined;
+  return { zones, ...(Number.isFinite(seeThroughTo) ? { seeThroughTo } : {}) };
+}
+
 export function parseScan(input: string): RoomScan | null {
   try {
     const raw = input.trim().startsWith('{') ? input : fromBase64Url(input);
@@ -40,6 +59,7 @@ export function parseScan(input: string): RoomScan | null {
       .map((p) => ({ x: Number(p.x), z: Number(p.z) }))
       .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
     if (polygon.length < 3) return null;
+    const ceiling = parseCeiling(data.ceiling);
     return {
       schema: ROOMSCAN_SCHEMA,
       polygon,
@@ -51,6 +71,7 @@ export function parseScan(input: string): RoomScan | null {
       unitSystem: (data.unitSystem as UnitSystem) ?? 'metric',
       confidence: typeof data.confidence === 'number' ? data.confidence : 0.8,
       capturedAt: typeof data.capturedAt === 'string' ? data.capturedAt : new Date().toISOString(),
+      ...(ceiling ? { ceiling } : {}),
     };
   } catch {
     return null;
@@ -63,7 +84,7 @@ const polyParam = (polygon: Vec2[]): string =>
 /**
  * Build the MOZU `/scan` deep link for a measured room.
  *   `…/scan?poly=0,0;4000,0;4000,3000;0,3000&h=2700`        (always)
- *   `…&scan=<base64url>`                                     (if openings/objects)
+ *   `…&scan=<base64url>`                    (if openings/objects/fixtures/ceiling)
  */
 export function handoffUrl(webBase: string, scan: RoomScan): string {
   const base = webBase.replace(/\/+$/, '');
@@ -71,7 +92,7 @@ export function handoffUrl(webBase: string, scan: RoomScan): string {
   params.set('poly', polyParam(scan.polygon));
   params.set('h', String(Math.round(scan.height)));
   params.set('src', scan.source);
-  if (scan.openings.length || scan.objects.length || scan.fixtures?.length) {
+  if (scan.openings.length || scan.objects.length || scan.fixtures?.length || scan.ceiling) {
     params.set('scan', toBase64Url(serializeScan(scan)));
   }
   return `${base}/scan?${params.toString()}`;

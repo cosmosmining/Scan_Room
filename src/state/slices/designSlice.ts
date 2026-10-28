@@ -8,6 +8,7 @@ import {
   type SurfaceFinish,
 } from '@/systems/aesthetic/finishes';
 import { furnitureItem } from '@/systems/furniture/catalog';
+import { inwardNormal } from '@/systems/layout/geometry2d';
 import type { ConfiguratorState, DesignSlice } from '@/state/types';
 import type { Vec3 } from '@/lib/types';
 
@@ -76,12 +77,19 @@ export function clampToRoom(p: { x: number; z: number }, poly: Vec3[]): { x: num
     if (d < bestD) {
       bestD = d;
       best = q;
-      const n = Math.hypot(abz, abx) || 1;
-      inward = { x: -abz / n, z: abx / n };
+      // The room side of this wall, whichever way round the corners run.
+      inward = inwardNormal(a, b, poly);
     }
   }
   return { x: best.x + inward.x * 50, z: best.z + inward.z * 50 };
 }
+
+/**
+ * A column is something the cabinets are packed around, so moving or removing
+ * one re-runs the layout. Other furniture does not take part in it.
+ */
+const isColumn = (items: { id: string; column?: unknown }[], id: string): boolean =>
+  items.some((i) => i.id === id && i.column);
 
 export const createDesignSlice: StateCreator<
   ConfiguratorState,
@@ -129,14 +137,17 @@ export const createDesignSlice: StateCreator<
   clearFurniture: () =>
     set((s) => ({ designItems: s.designItems.filter((i) => i.column), designSelection: null })),
 
-  removeFurniture: (id) =>
+  removeFurniture: (id) => {
+    const wasColumn = isColumn(get().designItems, id);
     set((s) => ({
       designItems: s.designItems.filter((i) => i.id !== id),
       designSelection: s.designSelection === id ? null : s.designSelection,
       finishTarget: s.finishTarget.kind === 'item' && s.finishTarget.id === id
         ? { kind: 'wall' }
         : s.finishTarget,
-    })),
+    }));
+    if (wasColumn) get().regenerateLayout();
+  },
 
   duplicateFurniture: (id) => {
     const source = get().designItems.find((i) => i.id === id);
@@ -159,17 +170,21 @@ export const createDesignSlice: StateCreator<
     return copyId;
   },
 
-  moveFurniture: (id, position) =>
+  moveFurniture: (id, position) => {
     set((s) => ({
       designItems: s.designItems.map((i) =>
         i.id === id ? { ...i, position: clampToRoom(position, s.room.footprint) } : i,
       ),
-    })),
+    }));
+    if (isColumn(get().designItems, id)) get().regenerateLayout();
+  },
 
-  rotateFurniture: (id, rotationY) =>
+  rotateFurniture: (id, rotationY) => {
     set((s) => ({
       designItems: s.designItems.map((i) => (i.id === id ? { ...i, rotationY } : i)),
-    })),
+    }));
+    if (isColumn(get().designItems, id)) get().regenerateLayout();
+  },
 
   selectFurniture: (id) =>
     set((s) => ({

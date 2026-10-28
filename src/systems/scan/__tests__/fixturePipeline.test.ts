@@ -245,7 +245,7 @@ describe('socket detection end to end', () => {
     expect(socket!.point.z).toBeCloseTo(0, 1);
   });
 
-  it('a detected socket then blocks a cabinet placed over it', async () => {
+  it('a detected socket then keeps a cabinet from being placed over it', async () => {
     const { generateLayout } = await import('@/systems/layout');
     const frame = frameWith((img) => paintSocket(img, 320, 240));
     const found = detectWallFixtures([frame], walls, 2700)
@@ -280,8 +280,10 @@ describe('socket detection end to end', () => {
         height: found[0].fixture.height,
       }],
     });
-    const blocked = res.violations.filter((v) => v.kind === 'fixture-blocked');
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0].severity).toBe('error');
+    // The cabinet is kept clear of the detected socket rather than sealing it.
+    expect(res.violations.filter((v) => v.kind === 'fixture-blocked')).toEqual([]);
+    const socketAt = Math.min(at, 500);
+    const p = res.placements[0];
+    expect(p.offset >= socketAt + 150 || p.offset + p.module.width <= socketAt - 150).toBe(true);
   });
 });

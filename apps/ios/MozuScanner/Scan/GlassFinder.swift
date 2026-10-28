@@ -74,13 +74,14 @@ enum GlassFinder {
     static let cellMm = 100.0
     static let beyondMm = 300.0
     static let onWallMm = 120.0
-    static let endMarginMm = 150.0
+    static let endMarginMm = 50.0
     static let minThrough = 2
     static let throughRatio = 2
     static let minSideMm = 400.0
     static let minFill = 0.6
+    static let edgeFill = 0.5
     static let minVotes = 24
-    static let minDensity = 1.0
+    static let minDensity = 2.0
     static let doorSillMm = 300.0
     static let brightLuma = 235.0
     static let brightRangeMm = 2500.0
@@ -96,12 +97,17 @@ enum GlassFinder {
         let rows: Int
         var through: [Int]
         var solid: [Int]
+        /// The two nearest ranges each cell was measured solid from.
+        var near1: [Double]
+        var near2: [Double]
 
         init(a: Vec2, length: Double, d: Vec2, inward: Vec2, cols: Int, rows: Int) {
             self.a = a; self.length = length; self.d = d; self.inward = inward
             self.cols = cols; self.rows = rows
             through = Array(repeating: 0, count: cols * rows)
             solid = Array(repeating: 0, count: cols * rows)
+            near1 = Array(repeating: Double.infinity, count: cols * rows)
+            near2 = Array(repeating: Double.infinity, count: cols * rows)
         }
 
         func cell(_ t: Double, _ y: Double) -> Int {
@@ -141,6 +147,10 @@ enum GlassFinder {
             )
         }
 
+        // No-return readings, held until every solid one is in: whether they
+        // count depends on how near the same cell was measured solid.
+        var voids: [(wall: Int, cell: Int, range: Double, weight: Int)] = []
+
         for ray in rays {
             let eye = ray.eye, hit = ray.hit
             // Medium or high confidence measured something; low says only that
@@ -159,9 +169,18 @@ enum GlassFinder {
                 let sHit = (hit.x - w.a.x) * w.inward.x + (hit.z - w.a.z) * w.inward.z
                 let tHit = (hit.x - w.a.x) * w.d.x + (hit.z - w.a.z) * w.d.z
 
-                // Landed ON this wall: a vote that it is solid there.
-                if measured, abs(sHit) <= onWallMm, tHit >= 0, tHit <= w.length, hit.y >= 0, hit.y <= ceilingMm {
-                    w.solid[w.cell(tHit, hit.y)] += 1
+                // Landed ON this wall: a vote that it is solid there. Not right
+                // at its ends, where the walls either side are hit too.
+                if measured, abs(sHit) <= onWallMm, tHit >= endMarginMm, tHit <= w.length - endMarginMm,
+                   hit.y >= 0, hit.y <= ceilingMm {
+                    let cell: Int = w.cell(tHit, hit.y)
+                    w.solid[cell] += 1
+                    if length < w.near1[cell] {
+                        w.near2[cell] = w.near1[cell]
+                        w.near1[cell] = length
+                    } else if length < w.near2[cell] {
+                        w.near2[cell] = length
+                    }
                 }
 
                 if measured {
@@ -198,7 +217,24 @@ enum GlassFinder {
             let cz = eye.z + (hit.z - eye.z) * at.f
             let close: Bool = at.f * length <= brightRangeMm
             let weight: Int = bright && close ? 2 : 1
-            w.through[w.cell((cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z, y)] += weight
+            let along: Double = (cx - w.a.x) * w.d.x + (cz - w.a.z) * w.d.z
+            let cell: Int = w.cell(along, y)
+            if exit != nil {
+                w.through[cell] += weight
+            } else {
+                voids.append((wall: at.wall, cell: cell, range: at.f * length, weight: weight))
+            }
+        }
+
+        // Glass in sunlight returns nothing from any distance; a solid wall in
+        // strong sun returns nothing only from far off, and is measured from
+        // nearer. So a no-return reading does not count against a cell measured
+        // solid — twice, so one stray reading cannot do it — from as near or
+        // nearer. It used to, and a sunlit wall beside a pane read as more pane.
+        for v in voids {
+            let w = walls[v.wall]
+            if v.range >= w.near2[v.cell] { continue }
+            w.through[v.cell] += v.weight
         }
 
         var found: [(opening: ScanOpening, votes: Int)] = []
@@ -234,7 +270,30 @@ enum GlassFinder {
                         }
                     }
                 }
+                let id = next
                 next += 1
+
+                // Trim the outline back to the pane. Joining across gaps makes a
+                // sparse speckle one pane, but also lets a stray see-through cell
+                // or two in the solid wall beside it drag an edge out — in strong
+                // sun, by half a metre. An edge column or row stays only where,
+                // of what was seen in it, most is this pane.
+                func lineFill(_ line: [Int]) -> Double {
+                    var seenHere = 0, mine = 0
+                    for j in line {
+                        if w.through[j] + w.solid[j] > 0 { seenHere += 1 }
+                        if label[j] == id { mine += 1 }
+                    }
+                    return seenHere == 0 ? 0 : Double(mine) / Double(seenHere)
+                }
+                func column(_ c: Int) -> [Int] { (r0...r1).map { r in r * w.cols + c } }
+                func row(_ r: Int) -> [Int] { (c0...c1).map { c in r * w.cols + c } }
+                while c0 < c1, lineFill(column(c0)) < edgeFill { c0 += 1 }
+                while c1 > c0, lineFill(column(c1)) < edgeFill { c1 -= 1 }
+                // Not the floor or ceiling row: hits on the floor or ceiling right
+                // at the wall land there too, so glass reaching them looks thin.
+                while r0 > 0, r0 < r1, lineFill(row(r0)) < edgeFill { r0 += 1 }
+                while r1 < w.rows - 1, r1 > r0, lineFill(row(r1)) < edgeFill { r1 -= 1 }
 
                 let width = Double(c1 - c0 + 1) * cellMm
                 let height = Double(r1 - r0 + 1) * cellMm

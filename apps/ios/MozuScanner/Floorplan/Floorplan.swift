@@ -88,6 +88,8 @@ struct Floorplan {
     let bounds: FloorplanBounds
     let unitSystem: String
     let source: ScanSource
+    /// Bulkheads, recesses and a see-through ceiling, when the scan found them.
+    let ceiling: ScanCeiling?
 
     /// Build a dimensioned floorplan from a scan (cleans + orients the polygon).
     static func build(from scan: RoomScan) -> Floorplan {
@@ -116,7 +118,8 @@ struct Floorplan {
             fixtures: Floorplan.place(scan.fixtures, from: scan.polygon, onto: walls),
             areaMm2: Geo.area(pts), perimeterMm: Geo.perimeter(pts),
             height: scan.height, bounds: bounds,
-            unitSystem: scan.unitSystem, source: scan.source
+            unitSystem: scan.unitSystem, source: scan.source,
+            ceiling: scan.ceiling
         )
     }
 

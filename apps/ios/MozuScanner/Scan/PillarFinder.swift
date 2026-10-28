@@ -56,6 +56,8 @@ enum PillarFinder {
     /// More than `wallClearMm`: readings in that band are never looked at, so
     /// something that seems to stop at its edge may run on to the wall.
     static let footprintClearMm = 300.0
+    /// A round column may reach this far into the wall line.
+    static let wallTouchMm = 100.0
 
     private final class Cell {
         let key: Int
@@ -178,8 +180,11 @@ enum PillarFinder {
             // already known as furniture, not found twice.
             let clear: Bool
             if pillar.shape == .round {
-                let gap: Double = edgeClearance(pillar.center, polygon) - pillar.width / 2
-                clear = inside(pillar.center, polygon) && gap >= footprintClearMm
+                // A round one may stand right against a wall — the concrete
+                // column at a glass wall — since nothing that only looks like a
+                // column there (a tall cupboard) is round. A box must stand clear.
+                let reach: Double = edgeClearance(pillar.center, polygon)
+                clear = inside(pillar.center, polygon) && reach >= pillar.width / 2 - wallTouchMm
             } else {
                 clear = corners(pillar).allSatisfy {
                     inside($0, polygon) && edgeClearance($0, polygon) >= footprintClearMm

@@ -75,11 +75,41 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             build | tee build.log | grep -E 'error:|warning:|BUILD (SUCCEEDED|FAILED)'
+      # What scripts/testflight.sh uploads: the Release archive. Signing
+      # needs the developer's account, so it is checked unsigned here — the
+      # optimised build compiles, and the app carries what App Store Connect
+      # refuses a build without.
+      - name: Archive for TestFlight (Release, unsigned)
+        working-directory: apps/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MozuScanner.xcodeproj \
+            -scheme MozuScanner \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/MozuScanner.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION="$(date +%Y%m%d%H%M)" \
+            archive | tee archive.log | grep -E 'error:|ARCHIVE (SUCCEEDED|FAILED)'
+      - name: Check what App Store Connect checks
+        working-directory: apps/ios
+        run: |
+          APP=build/MozuScanner.xcarchive/Products/Applications/MozuScanner.app
+          test -f "$APP/PrivacyInfo.xcprivacy" || { echo "::error::privacy manifest missing from the app"; exit 1; }
+          test -f "$APP/Assets.car" || { echo "::error::asset catalog (app icon) missing from the app"; exit 1; }
+          icon=$(plutil -extract CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName raw "$APP/Info.plist")
+          [ "$icon" = AppIcon ] || { echo "::error::app icon not set (got '$icon')"; exit 1; }
+          crypto=$(plutil -extract ITSAppUsesNonExemptEncryption raw "$APP/Info.plist")
+          [ "$crypto" = false ] || { echo "::error::ITSAppUsesNonExemptEncryption should be false"; exit 1; }
+          echo "version $(plutil -extract CFBundleShortVersionString raw "$APP/Info.plist") build $(plutil -extract CFBundleVersion raw "$APP/Info.plist") — ready for App Store Connect"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
-          path: apps/ios/build.log
+          path: |
+            apps/ios/build.log
+            apps/ios/archive.log
           retention-days: 14
 
   nightly-fuzz:

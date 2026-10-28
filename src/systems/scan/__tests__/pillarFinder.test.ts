@@ -90,6 +90,25 @@ describe('a column in the middle of the room', () => {
     expect(Math.abs(p.width - 500)).toBeLessThanOrEqual(30);
   });
 
+  it('a round concrete column right against a glass wall, under a mesh ceiling, by day and night', () => {
+    // The column at the 落地窗: touching the glass, or nearly, 700 mm from the
+    // corner, running up through an expanded-metal ceiling.
+    for (const gap of [0, 50]) {
+      for (const daylight of [false, true]) {
+        const r: SimRoom = {
+          polygon: ROOM, ceiling: 2700, ceilingMesh: { open: 0.6, slab: 3400 },
+          pillars: [{ x: 1000, z: 300 + gap, shape: 'round', width: 600 }],
+          patches: [{ wall: 0, t0: 0, t1: 6000, y0: 0, y1: 2700, surface: 'glass' }],
+        };
+        const found = findPillars(simulateScan(r, { daylight, fill: 'wall', seed: 4 }), ROOM, 2700);
+        expect(found, `gap ${gap}, ${daylight ? 'day' : 'night'}`).toHaveLength(1);
+        expect(found[0].shape).toBe('round');
+        expect(Math.hypot(found[0].center.x - 1000, found[0].center.z - (300 + gap))).toBeLessThanOrEqual(30);
+        expect(Math.abs(found[0].width - 600)).toBeLessThanOrEqual(30);
+      }
+    }
+  });
+
   it('350mm off a wall', () => {
     const [p] = findPillars(simulateScan(room([{ x: 3000, z: 575, shape: 'round', width: 450 }]), { daylight: false, fill: 'wall' }), ROOM, CEILING);
     expect(Math.abs(p.center.z - 575)).toBeLessThanOrEqual(30);

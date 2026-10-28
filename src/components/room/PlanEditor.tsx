@@ -717,7 +717,16 @@ export function PlanEditor() {
             </button>
           </>
         )}
-        <span className="ml-auto tabular-nums text-neutral-400">{area.toFixed(1)} m²</span>
+        {room.ceiling?.seeThroughTo !== undefined && (
+          <span className="ml-auto tabular-nums text-neutral-400" data-testid="mesh-ceiling">
+            Mesh ceiling · slab {Math.round(room.ceiling.seeThroughTo / 10)} cm
+          </span>
+        )}
+        <span
+          className={`${room.ceiling?.seeThroughTo !== undefined ? '' : 'ml-auto '}tabular-nums text-neutral-400`}
+        >
+          {area.toFixed(1)} m²
+        </span>
       </div>
 
       <svg
@@ -739,6 +748,39 @@ export function PlanEditor() {
           strokeWidth={wallW}
           strokeLinejoin="miter"
         />
+
+        {/* The ceiling's bulkheads and recesses, outlined in the shape the scan
+            found (angled and L-shaped edges included), dashed because they are
+            overhead, and labelled with their height in centimetres. */}
+        {room.ceiling?.zones.map((zone, i) => {
+          const n = zone.polygon.length;
+          if (n < 3) return null;
+          const cx = zone.polygon.reduce((t, p) => t + p.x, 0) / n;
+          const cz = zone.polygon.reduce((t, p) => t + p.z, 0) / n;
+          const lower = zone.height < room.height;
+          return (
+            <g key={`ceiling_${i}`} pointerEvents="none" data-testid="ceiling-zone">
+              <polygon
+                points={zone.polygon.map((p) => `${p.x},${p.z}`).join(' ')}
+                fill={lower ? '#f59e0b' : '#38bdf8'}
+                fillOpacity={0.08}
+                stroke={lower ? '#f59e0b' : '#38bdf8'}
+                strokeWidth={wallW * 0.22}
+                strokeDasharray={`${wallW * 0.9} ${wallW * 0.6}`}
+                strokeLinejoin="round"
+              />
+              <text
+                x={cx}
+                y={cz + font * 0.25}
+                fontSize={font * 0.6}
+                textAnchor="middle"
+                fill={lower ? '#f59e0b' : '#38bdf8'}
+              >
+                {lower ? 'Bulkhead' : 'Recess'} {Math.round(zone.height / 10)}
+              </text>
+            </g>
+          );
+        })}
 
         {/* Wall dimensions, in centimetres, nudged outside the wall line. */}
         {room.walls.map((wall) => {
