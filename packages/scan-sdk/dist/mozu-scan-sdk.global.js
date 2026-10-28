@@ -678,6 +678,21 @@ var MozuScan = (() => {
   function serializeScan(scan) {
     return JSON.stringify(scan);
   }
+  function parseCeiling(raw) {
+    if (!raw || typeof raw !== "object") return void 0;
+    const c = raw;
+    const zones = [];
+    for (const z of Array.isArray(c.zones) ? c.zones : []) {
+      const zone = z;
+      const height = Number(zone.height);
+      if (!Array.isArray(zone.polygon) || !Number.isFinite(height)) continue;
+      const polygon = zone.polygon.map((p) => ({ x: Number(p?.x), z: Number(p?.z) })).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
+      if (polygon.length >= 3) zones.push({ polygon, height });
+    }
+    const seeThroughTo = Number(c.seeThroughTo);
+    if (zones.length === 0 && !Number.isFinite(seeThroughTo)) return void 0;
+    return { zones, ...Number.isFinite(seeThroughTo) ? { seeThroughTo } : {} };
+  }
   function parseScan(input) {
     try {
       const raw = input.trim().startsWith("{") ? input : fromBase64Url(input);
@@ -685,6 +700,7 @@ var MozuScan = (() => {
       if (!Array.isArray(data.polygon) || data.polygon.length < 3) return null;
       const polygon = data.polygon.map((p) => ({ x: Number(p.x), z: Number(p.z) })).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
       if (polygon.length < 3) return null;
+      const ceiling = parseCeiling(data.ceiling);
       return {
         schema: ROOMSCAN_SCHEMA,
         polygon,
@@ -695,7 +711,8 @@ var MozuScan = (() => {
         source: data.source ?? "manual",
         unitSystem: data.unitSystem ?? "metric",
         confidence: typeof data.confidence === "number" ? data.confidence : 0.8,
-        capturedAt: typeof data.capturedAt === "string" ? data.capturedAt : (/* @__PURE__ */ new Date()).toISOString()
+        capturedAt: typeof data.capturedAt === "string" ? data.capturedAt : (/* @__PURE__ */ new Date()).toISOString(),
+        ...ceiling ? { ceiling } : {}
       };
     } catch {
       return null;
@@ -708,7 +725,7 @@ var MozuScan = (() => {
     params.set("poly", polyParam(scan.polygon));
     params.set("h", String(Math.round(scan.height)));
     params.set("src", scan.source);
-    if (scan.openings.length || scan.objects.length || scan.fixtures?.length) {
+    if (scan.openings.length || scan.objects.length || scan.fixtures?.length || scan.ceiling) {
       params.set("scan", toBase64Url(serializeScan(scan)));
     }
     return `${base}/scan?${params.toString()}`;

@@ -83,6 +83,25 @@ export interface FixtureScanSummary {
   detected: number;
 }
 
+/**
+ * Part of the ceiling at another height than the rest — a bulkhead or soffit
+ * boxed in along the windows (lower), or a recess (higher). Outlined as the
+ * scan found it, angled and L-shaped edges included.
+ */
+export interface CeilingZone {
+  /** Outline on the floor plane (x, z), millimetres, counter-clockwise. */
+  polygon: { x: Millimeters; z: Millimeters }[];
+  /** Height of the ceiling over this area, off the floor. */
+  height: Millimeters;
+}
+
+/** What the scan found on the ceiling beyond its one height. */
+export interface RoomCeiling {
+  zones: CeilingZone[];
+  /** A see-through ceiling (expanded-metal mesh): the slab seen through it, mm off the floor. */
+  seeThroughTo?: Millimeters;
+}
+
 export interface Room {
   id: string;
   name: string;
@@ -95,6 +114,8 @@ export interface Room {
   source: RoomSource;
   /** Outcome of the scan's fixture pass, when a scan produced this room. */
   fixtureScan?: FixtureScanSummary;
+  /** Bulkheads, recesses and a see-through ceiling, when a scan found them. */
+  ceiling?: RoomCeiling;
   createdAt: string;
   updatedAt: string;
 }

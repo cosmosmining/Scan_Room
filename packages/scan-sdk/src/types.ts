@@ -109,6 +109,24 @@ export interface ScanObject {
  * The normalized output of any capture path. This is the wire format the iOS
  * app and extensions hand to the web app (see `serializeScan`/`parseScan`).
  */
+/**
+ * An area of the ceiling at another height than the rest: a bulkhead or soffit
+ * (lower), a recess (higher). Its outline follows whatever shape it has.
+ */
+export interface ScanCeilingZone {
+  /** Counter-clockwise outline on the plan, millimetres. */
+  polygon: Vec2[];
+  /** Height of the ceiling over this area, mm off the floor. */
+  height: Millimeters;
+}
+
+/** The ceiling beyond its one height: where it drops or rises, and whether it is see-through. */
+export interface ScanCeiling {
+  zones: ScanCeilingZone[];
+  /** For a see-through ceiling (expanded-metal mesh): the height of the slab seen through it. */
+  seeThroughTo?: Millimeters;
+}
+
 export interface RoomScan {
   schema: typeof ROOMSCAN_SCHEMA;
   /** Ordered, closed floor polygon (millimetres). Requires 3+ vertices. */
@@ -128,6 +146,8 @@ export interface RoomScan {
   /** Capture confidence, 0..1 (1 = exact / user-asserted). */
   confidence: number;
   capturedAt: string;
+  /** Bulkheads, recesses and a see-through ceiling, when the scan saw them. */
+  ceiling?: ScanCeiling;
 }
 
 // ── Floorplan (derived view) ────────────────────────────────────────────────

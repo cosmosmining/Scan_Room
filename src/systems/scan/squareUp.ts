@@ -11,7 +11,8 @@
  * So the room is turned by the smallest angle that lines its walls up with the
  * axes, and moved so its bounding box starts at (0, 0) — where a room drawn by
  * hand starts. Openings and fixtures are placed along their walls, so they
- * need nothing; the objects in the room turn and move with it. A room that is
+ * need nothing; the objects in the room and the outlines of its ceiling's
+ * bulkheads and recesses turn and move with it. A room that is
  * already square to the axes is only moved.
  */
 
@@ -64,5 +65,13 @@ export function squareUp(scan: RoomScan): RoomScan {
       center: place(o.center),
       rotation: square ? o.rotation : o.rotation + turn,
     })),
+    ...(scan.ceiling
+      ? {
+          ceiling: {
+            ...scan.ceiling,
+            zones: scan.ceiling.zones.map((z) => ({ ...z, polygon: z.polygon.map(place) })),
+          },
+        }
+      : {}),
   };
 }

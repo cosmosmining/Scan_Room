@@ -79,5 +79,8 @@ export function scanToGeometry(received: RoomScan): RoomGeometry {
   // nothing could be removed. They are carried as MEASUREMENTS, not products —
   // see `applyRoomGeometry`, which seeds them as removable placed items.
   geometry.objects = scan.objects ?? [];
+  // …and the ceiling's bulkheads and recesses, in the same turned frame as the
+  // walls (squareUp moved them with the room).
+  if (scan.ceiling) geometry.ceiling = scan.ceiling;
   return geometry;
 }

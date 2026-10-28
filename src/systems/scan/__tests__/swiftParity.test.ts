@@ -4,6 +4,7 @@ import { detectSockets, type DetectorImage } from '@/systems/scan';
 import { analyseWalls } from '@/systems/scan/wallLoop';
 import { findGlass, type DepthRay } from '@/systems/scan/glassFinder';
 import { findPillars, type Footprint } from '@/systems/scan/pillarFinder';
+import { findCeiling } from '@/systems/scan/ceilingFinder';
 import { mulberry32, room } from './helpers/roomGen';
 import { simulateScan, type SimRoom } from './helpers/sensorSim';
 
@@ -102,6 +103,38 @@ function sunnyGlassWalls() {
   }));
 }
 
+/**
+ * Ceilings as the field photos show them: an expanded-metal mesh with a
+ * bulkhead along the windows, a bulkhead whose edge runs at an angle, an L of
+ * bulkhead round a corner with a column at the glass — and one room turned to
+ * where a real scan would put it.
+ */
+function ceilingCases() {
+  const W = 6000, D = 5000;
+  const polygon = [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: D }, { x: 0, z: D }];
+  const along = (z: number) => [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z }, { x: 0, z }];
+  const turn = (p: P) => {
+    const a = (23 * Math.PI) / 180;
+    return { x: p.x * Math.cos(a) - p.z * Math.sin(a) - 2400, z: p.x * Math.sin(a) + p.z * Math.cos(a) + 1800 };
+  };
+  const rooms: SimRoom[] = [
+    { polygon, ceiling: 2700, ceilingMesh: { open: 0.6, slab: 3400 }, soffits: [{ polygon: along(450), bottom: 2350 }] },
+    { polygon, ceiling: 2700, soffits: [{ polygon: [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: 1100 }, { x: 0, z: 400 }], bottom: 2400 }] },
+    {
+      polygon, ceiling: 2700, ceilingMesh: { open: 0.6, slab: 3400 },
+      soffits: [{ polygon: [{ x: 0, z: 0 }, { x: W, z: 0 }, { x: W, z: 500 }, { x: 600, z: 500 }, { x: 600, z: D }, { x: 0, z: D }], bottom: 2300 }],
+      pillars: [{ x: 3000, z: 820, shape: 'round', width: 600 }],
+    },
+    { polygon: polygon.map(turn), ceiling: 2700, soffits: [{ polygon: along(450).map(turn), bottom: 2350 }] },
+  ];
+  return rooms.map((room, k) => {
+    const rays = simulateScan(room, { daylight: k % 2 === 1, fill: 'wall', seed: 400 + k, laps: 1, stepMm: 300 })
+      .map((r) => ({ ...r, confidence: r.confidence, luma: r.luma === undefined ? undefined : Math.round(r.luma) }));
+    const exclude: Footprint[] = (room.pillars ?? []).map((c) => ({ center: { x: c.x, z: c.z }, width: c.width, depth: c.width, rotation: 0 }));
+    return { rays, polygon: room.polygon, exclude };
+  });
+}
+
 function images(): DetectorImage[] {
   const make = (bg: number): DetectorImage => {
     const data = new Uint8ClampedArray(256 * 192 * 4);
@@ -136,6 +169,7 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
   const walls = Array.from({ length: ROOMS }, () => room(rnd).segments);
   const glass = Array.from({ length: 100 }, () => glassCase(rnd));
   const sims = simCases(rnd);
+  const ceilings = ceilingCases();
   const imgs = images();
   const gray = imgs.map((img) => ({
     width: img.width,
@@ -150,10 +184,11 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
         glass: [...glass, ...sims.map(({ rays, polygon, ceilingMm, existing }) => ({ rays, polygon, ceilingMm, existing }))],
         pillars: sims.map(({ rays, polygon, ceilingMm, exclude }) => ({ rays, polygon, ceilingMm, exclude })),
         images: gray,
+        ceilings: ceilings.map(({ rays, polygon, exclude }) => ({ rays, polygon, exclude })),
       }),
       maxBuffer: 1 << 28,
     }).toString())
-    : { walls: [], glass: [], pillars: [], detections: [] };
+    : { walls: [], glass: [], pillars: [], detections: [], ceilings: [] };
 
   it(`on ${ROOMS} rooms: outline, pillars and clutter`, () => {
     const diffs: number[] = [];
@@ -203,6 +238,27 @@ describe.skipIf(!BIN)('Swift and TypeScript agree', () => {
       if (!same) diffs.push(i);
     });
     expect(found, 'the walks find glass at all, so agreement means something').toBeGreaterThanOrEqual(15);
+    expect(diffs).toEqual([]);
+  });
+
+  it('on 4 ceilings: mesh, bulkheads straight, angled and L-shaped, a turned room', () => {
+    const diffs: number[] = [];
+    let zones = 0;
+    ceilings.forEach((c, i) => {
+      const ts = findCeiling(c.rays as DepthRay[], c.polygon, c.exclude);
+      const sw = out.ceilings[i];
+      zones += ts?.zones.length ?? 0;
+      const same = ts === null
+        ? sw === null
+        : sw !== null && close(ts.height, sw.height) &&
+          (ts.seeThroughTo === null ? sw.seeThroughTo == null : close(ts.seeThroughTo, sw.seeThroughTo)) &&
+          ts.zones.length === sw.zones.length &&
+          ts.zones.every((z, k) => close(z.height, sw.zones[k].height) &&
+            z.polygon.length === sw.zones[k].polygon.length &&
+            z.polygon.every((p, j) => close(p.x, sw.zones[k].polygon[j].x) && close(p.z, sw.zones[k].polygon[j].z)));
+      if (!same) diffs.push(i);
+    });
+    expect(zones, 'the ceilings show bulkheads at all, so agreement means something').toBeGreaterThanOrEqual(3);
     expect(diffs).toEqual([]);
   });
 

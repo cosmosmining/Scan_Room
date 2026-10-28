@@ -84,6 +84,7 @@ export function roomGeometryToRoom(
     // Carry what the fixture pass found; without it the UI cannot tell
     // "we looked and found none" from "we never looked".
     fixtureScan: geometry.fixtureScan,
+    ...(geometry.ceiling ? { ceiling: geometry.ceiling } : {}),
     createdAt: now,
     updatedAt: now,
   };

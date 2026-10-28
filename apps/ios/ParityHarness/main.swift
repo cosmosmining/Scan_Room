@@ -1,6 +1,6 @@
 // Swift ⇄ TypeScript parity harness.
 //
-// The iPad's scan geometry (WallLoop, GlassFinder, PillarFinder, SocketDetector) has a
+// The iPad's scan geometry (WallLoop, GlassFinder, PillarFinder, CeilingFinder, SocketDetector) has a
 // TypeScript twin that carries the tests. This tiny command-line tool runs the
 // SWIFT versions on whatever the TypeScript test feeds it on stdin and prints
 // the results as JSON, so `src/systems/scan/__tests__/swiftParity.test.ts` can
@@ -20,15 +20,22 @@ struct GlassCase: Codable { var rays: [InRay]; var polygon: [Vec2]; var ceilingM
 struct InFoot: Codable { var center: Vec2; var width: Double; var depth: Double; var rotation: Double }
 struct PillarCase: Codable { var rays: [InRay]; var polygon: [Vec2]; var ceilingMm: Double; var exclude: [InFoot] }
 struct GrayCase: Codable { var width: Int; var height: Int; var pixels: [Float] }
-struct Input: Codable { var walls: [[InSeg]]?; var glass: [GlassCase]?; var pillars: [PillarCase]?; var images: [GrayCase]? }
+struct CeilingCase: Codable { var rays: [InRay]; var polygon: [Vec2]; var exclude: [InFoot] }
+struct Input: Codable {
+    var walls: [[InSeg]]?; var glass: [GlassCase]?; var pillars: [PillarCase]?; var images: [GrayCase]?
+    var ceilings: [CeilingCase]?
+}
 
 struct OutPillar: Codable {
     var center: Vec2; var shape: String; var width: Double; var depth: Double; var rotation: Double; var partial: Bool
 }
 struct OutWall: Codable { var outline: [Vec2]; var pillars: [OutPillar]; var clutterRejected: Int }
 struct OutDet: Codable { var cx: Double; var cy: Double; var w: Double; var h: Double; var holes: Int; var score: Double }
+struct OutZone: Codable { var polygon: [Vec2]; var height: Double }
+struct OutCeiling: Codable { var height: Double; var seeThroughTo: Double?; var zones: [OutZone] }
 struct Output: Codable {
     var walls: [OutWall]; var glass: [[ScanOpening]]; var pillars: [[OutPillar]]; var detections: [[OutDet]]
+    var ceilings: [OutCeiling?]
 }
 
 func ray(_ r: InRay) -> GlassFinder.Ray {
@@ -78,4 +85,16 @@ let detections: [[OutDet]] = (input.images ?? []).map { i in
         .map { OutDet(cx: $0.cx, cy: $0.cy, w: $0.w, h: $0.h, holes: $0.holes, score: $0.score) }
 }
 
-FileHandle.standardOutput.write(try JSONEncoder().encode(Output(walls: walls, glass: glass, pillars: pillars, detections: detections)))
+let ceilings: [OutCeiling?] = (input.ceilings ?? []).map { c in
+    CeilingFinder.ceiling(
+        rays: c.rays.map(ray),
+        polygon: c.polygon,
+        exclude: c.exclude.map { PillarFinder.Footprint(center: $0.center, width: $0.width, depth: $0.depth, rotation: $0.rotation) }
+    ).map { a in
+        OutCeiling(height: a.height, seeThroughTo: a.seeThroughTo, zones: a.zones.map { OutZone(polygon: $0.polygon, height: $0.height) })
+    }
+}
+
+FileHandle.standardOutput.write(try JSONEncoder().encode(Output(
+    walls: walls, glass: glass, pillars: pillars, detections: detections, ceilings: ceilings
+)))
