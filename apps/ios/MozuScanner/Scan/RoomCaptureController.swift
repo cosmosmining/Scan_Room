@@ -379,8 +379,12 @@ final class RoomCaptureController: ObservableObject {
             // Its two ends the same way round as last time, or the median of
             // its readings would mix one end with the other.
             if let last = roomTracker.lastReading(kind: "wall", key: w.key), last.count == 6 {
-                let same = hypot(v[0] - last[0], v[1] - last[1]) + hypot(v[2] - last[2], v[3] - last[3])
-                let swapped = hypot(v[2] - last[0], v[3] - last[1]) + hypot(v[0] - last[2], v[1] - last[3])
+                let sameA: Double = hypot(v[0] - last[0], v[1] - last[1])
+                let sameB: Double = hypot(v[2] - last[2], v[3] - last[3])
+                let swapA: Double = hypot(v[2] - last[0], v[3] - last[1])
+                let swapB: Double = hypot(v[0] - last[2], v[1] - last[3])
+                let same: Double = sameA + sameB
+                let swapped: Double = swapA + swapB
                 if swapped < same { v = [w.b.x, w.b.z, w.a.x, w.a.z, w.heightMm, w.topWorldMm] }
             }
             items.append(SurfaceTracker.Item(kind: "wall", key: w.key, values: v))
@@ -419,8 +423,10 @@ final class RoomCaptureController: ObservableObject {
             let b = poly[(o.wall + 1) % poly.count]
             let len = Geo.distance(a, b)
             guard len > 0 else { continue }
-            let t = o.offset + o.width / 2
-            let c = Vec2(x: a.x + (b.x - a.x) / len * t, z: a.z + (b.z - a.z) / len * t)
+            let t: Double = o.offset + o.width / 2
+            let cx: Double = a.x + (b.x - a.x) / len * t
+            let cz: Double = a.z + (b.z - a.z) / len * t
+            let c = Vec2(x: cx, z: cz)
             let sill = o.sill ?? 0
             items.append(SurfaceTracker.Item(kind: "glass", key: nil, values: [c.x, c.z, o.width, sill, sill + o.height]))
         }

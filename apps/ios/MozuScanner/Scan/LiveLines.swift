@@ -104,14 +104,18 @@ enum LiveLines {
     static let circleSegments = 16
 
     private static func dist(_ a: Vec2, _ b: Vec2) -> Double {
-        ((a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z)).squareRoot()
+        let dx: Double = a.x - b.x
+        let dz: Double = a.z - b.z
+        let squared: Double = dx * dx + dz * dz
+        return squared.squareRoot()
     }
 
     private static func nearestOnSegment(_ p: Vec2, _ a: Vec2, _ b: Vec2) -> (q: Vec2, d: Double, t: Double) {
-        let abx = b.x - a.x
-        let abz = b.z - a.z
-        let len2 = abx * abx + abz * abz
-        var t = len2 > 0 ? ((p.x - a.x) * abx + (p.z - a.z) * abz) / len2 : 0
+        let abx: Double = b.x - a.x
+        let abz: Double = b.z - a.z
+        let len2: Double = abx * abx + abz * abz
+        let along: Double = (p.x - a.x) * abx + (p.z - a.z) * abz
+        var t: Double = len2 > 0 ? along / len2 : 0
         t = max(0, min(1, t))
         let q = Vec2(x: a.x + abx * t, z: a.z + abz * t)
         return (q, dist(p, q), t)
@@ -134,7 +138,8 @@ enum LiveLines {
             let a = poly[i]
             let b = poly[j]
             if (a.z > p.z) != (b.z > p.z) {
-                let x: Double = (b.x - a.x) * (p.z - a.z) / (b.z - a.z) + a.x
+                let rise: Double = (b.x - a.x) * (p.z - a.z)
+                let x: Double = rise / (b.z - a.z) + a.x
                 if p.x < x { hit.toggle() }
             }
             j = i
@@ -180,7 +185,8 @@ enum LiveLines {
                     wallQ = hit.q
                 }
             }
-            return wallD <= snapMm || !inside(p, room) ? Vec2(x: wallQ.x, z: wallQ.z) : Vec2(x: p.x, z: p.z)
+            let onto: Bool = wallD <= snapMm || !inside(p, room)
+            return onto ? Vec2(x: wallQ.x, z: wallQ.z) : Vec2(x: p.x, z: p.z)
         }
         let clean = dedupe(snapped)
         return clean.count >= 3 && abs(signedArea(clean)) >= 1000 ? clean : []
@@ -223,9 +229,14 @@ enum LiveLines {
                 }
             }
             if k < 0 { break }
-            let hasPrev = k > 0
-            let hasNext = k + 1 < out.count
-            let toPrev = !hasNext || (hasPrev && abs(out[k - 1].h - out[k].h) <= abs(out[k + 1].h - out[k].h))
+            let hasPrev: Bool = k > 0
+            let hasNext: Bool = k + 1 < out.count
+            var toPrev: Bool = !hasNext
+            if hasPrev && hasNext {
+                let fromPrev: Double = abs(out[k - 1].h - out[k].h)
+                let fromNext: Double = abs(out[k + 1].h - out[k].h)
+                toPrev = fromPrev <= fromNext
+            }
             if toPrev && hasPrev {
                 out[k - 1].t1 = out[k].t1
             } else if hasNext {
@@ -288,11 +299,10 @@ enum LiveLines {
 
             var raw: [Run] = []
             for k in 0..<(cuts.count - 1) {
-                let tm = (cuts[k] + cuts[k + 1]) / 2
-                let probe = Vec2(
-                    x: a.x + dir.x * tm + inward.x * probeMm,
-                    z: a.z + dir.z * tm + inward.z * probeMm
-                )
+                let tm: Double = (cuts[k] + cuts[k + 1]) / 2
+                let px: Double = a.x + dir.x * tm + inward.x * probeMm
+                let pz: Double = a.z + dir.z * tm + inward.z * probeMm
+                let probe = Vec2(x: px, z: pz)
                 raw.append(Run(t0: cuts[k], t1: cuts[k + 1], h: heightAt(probe)))
             }
             let runs = mergeRuns(raw)
@@ -346,8 +356,10 @@ enum LiveLines {
                 let w = zp[(j + 1) % m]
                 let e1 = Vec2(x: v.x - u.x, z: v.z - u.z)
                 let e2 = Vec2(x: w.x - v.x, z: w.z - v.z)
-                let cross = e1.x * e2.z - e1.z * e2.x
-                let lens = (e1.x * e1.x + e1.z * e1.z).squareRoot() * (e2.x * e2.x + e2.z * e2.z).squareRoot()
+                let cross: Double = e1.x * e2.z - e1.z * e2.x
+                let len1: Double = (e1.x * e1.x + e1.z * e1.z).squareRoot()
+                let len2: Double = (e2.x * e2.x + e2.z * e2.z).squareRoot()
+                let lens: Double = len1 * len2
                 if lens <= 0 || abs(cross) / lens < minTurn { continue }
                 lines.append(Line(a: at(v, lo), b: at(v, hi), kind: .bulkhead))
             }
@@ -367,20 +379,21 @@ enum LiveLines {
             if wall < 0 || best > openingReachMm { continue }
             let a = poly[wall]
             let b = poly[(wall + 1) % n]
-            let L = dist(a, b)
+            let L: Double = dist(a, b)
             let dir = Vec2(x: (b.x - a.x) / L, z: (b.z - a.z) / L)
-            let t = (op.center.x - a.x) * dir.x + (op.center.z - a.z) * dir.z
-            let s0 = max(0, min(L, t - op.width / 2))
-            let s1 = max(0, min(L, t + op.width / 2))
+            let t: Double = (op.center.x - a.x) * dir.x + (op.center.z - a.z) * dir.z
+            let half: Double = op.width / 2
+            let s0: Double = max(0, min(L, t - half))
+            let s1: Double = max(0, min(L, t + half))
             if s1 - s0 < minOpeningMm { continue }
             let runs = runsOf[wall]
-            let tc = max(0, min(L, t))
+            let tc: Double = max(0, min(L, t))
             var border = runs[runs.count - 1].h
             for r in runs where tc >= r.t0 && tc <= r.t1 {
                 border = r.h
                 break
             }
-            let boxH = op.top - op.bottom
+            let boxH: Double = op.top - op.bottom
             let y0: Double
             let y1: Double
             if op.type == "window" {
@@ -388,7 +401,9 @@ enum LiveLines {
                 y1 = min(op.top, border)
             } else {
                 y0 = 0
-                y1 = min(min(max(boxH, op.top), boxH + doorReachMm), border)
+                let head: Double = max(boxH, op.top)
+                let reach: Double = boxH + doorReachMm
+                y1 = min(min(head, reach), border)
             }
             if y1 - y0 < minOpeningMm { continue }
             let kind: Kind = op.glass == true ? .glass : op.type == "window" ? .window : .door
@@ -407,17 +422,22 @@ enum LiveLines {
             if c.shape == "round" {
                 let r = c.width / 2
                 let k = circleSegments
-                ring = (0..<k).map { j -> Vec2 in
-                    let th = (2 * Double.pi * Double(j)) / Double(k)
-                    return Vec2(x: c.center.x + r * cos(th), z: c.center.z + r * sin(th))
+                ring = (0..<k).map { (j: Int) -> Vec2 in
+                    let th: Double = (2 * Double.pi * Double(j)) / Double(k)
+                    let x: Double = c.center.x + r * cos(th)
+                    let z: Double = c.center.z + r * sin(th)
+                    return Vec2(x: x, z: z)
                 }
             } else {
-                let cs = cos(c.rotation)
-                let sn = sin(c.rotation)
-                let hw = c.width / 2
-                let hd = c.depth / 2
-                ring = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)].map { l -> Vec2 in
-                    Vec2(x: c.center.x + l.0 * cs - l.1 * sn, z: c.center.z + l.0 * sn + l.1 * cs)
+                let cs: Double = cos(c.rotation)
+                let sn: Double = sin(c.rotation)
+                let hw: Double = c.width / 2
+                let hd: Double = c.depth / 2
+                let local: [(Double, Double)] = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)]
+                ring = local.map { (l: (Double, Double)) -> Vec2 in
+                    let x: Double = c.center.x + l.0 * cs - l.1 * sn
+                    let z: Double = c.center.z + l.0 * sn + l.1 * cs
+                    return Vec2(x: x, z: z)
                 }
             }
             let k = ring.count
@@ -428,11 +448,12 @@ enum LiveLines {
             }
         }
 
-        return lines.filter { l in
-            let dx = l.b.x - l.a.x
-            let dy = l.b.y - l.a.y
-            let dz = l.b.z - l.a.z
-            return (dx * dx + dy * dy + dz * dz).squareRoot() >= 1
+        return lines.filter { (l: Line) -> Bool in
+            let dx: Double = l.b.x - l.a.x
+            let dy: Double = l.b.y - l.a.y
+            let dz: Double = l.b.z - l.a.z
+            let squared: Double = dx * dx + dy * dy + dz * dz
+            return squared.squareRoot() >= 1
         }
     }
 }
@@ -588,17 +609,21 @@ final class SurfaceTracker {
             // How far each number may stray before it has moved: the deadband,
             // or more for a number whose readings wobble more (σ from the
             // median absolute deviation).
-            let band: [Double] = (0..<raw.count).map { k in
-                let m = target[k]
-                let mad = Self.median(span.map { abs($0[k] - m) })
-                return max(o.deadbandMm, o.spread * 1.4826 * mad)
+            let band: [Double] = (0..<raw.count).map { (k: Int) -> Double in
+                let m: Double = target[k]
+                let deviations: [Double] = span.map { (h: [Double]) -> Double in abs(h[k] - m) }
+                let sigma: Double = 1.4826 * Self.median(deviations)
+                return max(o.deadbandMm, o.spread * sigma)
             }
             var off = false
             for k in 0..<target.count where abs(target[k] - t.shown[k]) > band[k] { off = true }
             /// Take the numbers that have moved; leave the ones still inside
             /// half their band.
             func follow(_ to: [Double], _ shown: [Double]) -> [Double] {
-                (0..<shown.count).map { k in abs(to[k] - shown[k]) > band[k] / 2 ? to[k] : shown[k] }
+                (0..<shown.count).map { (k: Int) -> Double in
+                    let moved: Bool = abs(to[k] - shown[k]) > band[k] / 2
+                    return moved ? to[k] : shown[k]
+                }
             }
             if !t.visible {
                 t.shown = target

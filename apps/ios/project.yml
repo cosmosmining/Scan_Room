@@ -9,6 +9,9 @@
 #
 # Then set your signing Team in the target's Signing & Capabilities and run on
 # an iPad (a LiDAR iPad Pro is required only for the RoomPlan scan step).
+#
+# TestFlight: scripts/testflight.sh archives, signs and uploads in one go —
+# see apps/ios/TESTFLIGHT.md.
 
 name: MozuScanner
 options:
@@ -36,7 +39,11 @@ targets:
         excludes:
           - "**/*.md"
           - "Info.plist"
+          - "PrivacyInfo.xcprivacy"
           - "Resources/**"
+      # The privacy manifest App Store Connect requires, copied into the app.
+      - path: MozuScanner/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: MozuScanner/Resources
         buildPhase: resources
         excludes:
@@ -53,6 +60,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.mozu.scanner
         INFOPLIST_FILE: MozuScanner/Info.plist
         GENERATE_INFOPLIST_FILE: NO
+        # The icon in Assets.xcassets (drawn by scripts/make-app-icon.py).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
       configs:
         # OPTIMISE THE DEBUG BUILD. This is not a preference, it is the

@@ -41,9 +41,9 @@ struct LineIdentity {
         var pairs: [(cost: Float, old: Int, new: Int)] = []
         for (i, o) in last.enumerated() {
             for (j, s) in segments.enumerated() where s.kind == o.kind {
-                let straight = (simd_distance(o.a, s.a) + simd_distance(o.b, s.b)) / 2
-                let crossed = (simd_distance(o.a, s.b) + simd_distance(o.b, s.a)) / 2
-                let cost = min(straight, crossed)
+                let straight: Float = (simd_distance(o.a, s.a) + simd_distance(o.b, s.b)) / 2
+                let crossed: Float = (simd_distance(o.a, s.b) + simd_distance(o.b, s.a)) / 2
+                let cost: Float = min(straight, crossed)
                 if cost <= 0.3 { pairs.append((cost, i, j)) }
             }
         }
@@ -217,8 +217,10 @@ struct SteadyPlanInset: View {
     }
 
     private func draw(in context: inout GraphicsContext, size: CGSize) {
-        let lines = controller.steadyLines.filter {
-            $0.kind != .ceiling && $0.kind != .corner && abs($0.a.x - $0.b.x) + abs($0.a.z - $0.b.z) > 0.01
+        let lines: [SteadyLine] = controller.steadyLines.filter { (l: SteadyLine) -> Bool in
+            if l.kind == .ceiling || l.kind == .corner { return false }
+            let flat: Float = abs(l.a.x - l.b.x) + abs(l.a.z - l.b.z)
+            return flat > 0.01
         }
         guard !lines.isEmpty else { return }
         var minX = Float.infinity, maxX = -Float.infinity, minZ = Float.infinity, maxZ = -Float.infinity
@@ -236,12 +238,17 @@ struct SteadyPlanInset: View {
             maxZ = max(maxZ, t.columns.3.z)
         }
         let pad: CGFloat = 12
-        let span = CGFloat(max(maxX - minX, maxZ - minZ, 0.5))
-        let scale = (min(size.width, size.height) - pad * 2) / span
-        let ox = (size.width - CGFloat(maxX - minX) * scale) / 2
-        let oy = (size.height - CGFloat(maxZ - minZ) * scale) / 2
+        let spanX: Float = maxX - minX
+        let spanZ: Float = maxZ - minZ
+        let span: CGFloat = CGFloat(max(spanX, spanZ, 0.5))
+        let scale: CGFloat = (min(size.width, size.height) - pad * 2) / span
+        let ox: CGFloat = (size.width - CGFloat(spanX) * scale) / 2
+        let oy: CGFloat = (size.height - CGFloat(spanZ) * scale) / 2
+        let x0 = minX, z0 = minZ
         func p(_ x: Float, _ z: Float) -> CGPoint {
-            CGPoint(x: ox + CGFloat(x - minX) * scale, y: oy + CGFloat(z - minZ) * scale)
+            let px: CGFloat = ox + CGFloat(x - x0) * scale
+            let py: CGFloat = oy + CGFloat(z - z0) * scale
+            return CGPoint(x: px, y: py)
         }
         for l in lines {
             var path = Path()
@@ -253,9 +260,12 @@ struct SteadyPlanInset: View {
         if let t = camera {
             let at = p(t.columns.3.x, t.columns.3.z)
             // ARKit's camera looks down its own −Z.
-            let fx = -t.columns.2.x, fz = -t.columns.2.z
-            let n = max((fx * fx + fz * fz).squareRoot(), 1e-4)
-            let tip = CGPoint(x: at.x + CGFloat(fx / n) * 12, y: at.y + CGFloat(fz / n) * 12)
+            let fx: Float = -t.columns.2.x
+            let fz: Float = -t.columns.2.z
+            let n: Float = max((fx * fx + fz * fz).squareRoot(), 1e-4)
+            let tx: CGFloat = at.x + CGFloat(fx / n) * 12
+            let ty: CGFloat = at.y + CGFloat(fz / n) * 12
+            let tip = CGPoint(x: tx, y: ty)
             var heading = Path()
             heading.move(to: at)
             heading.addLine(to: tip)

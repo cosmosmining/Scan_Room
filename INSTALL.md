@@ -33,6 +33,12 @@ cd apps/ios && xcodegen generate && open MozuScanner.xcodeproj
 
 With a free Apple ID the app stops opening after 7 days. To reinstall, plug in the iPad and press **⌘R**.
 
+## Or: TestFlight (no cable, no 7-day limit)
+
+With a paid Apple Developer account, one command uploads the app to TestFlight.
+You then install it on any iPad from the TestFlight app. See
+[`apps/ios/TESTFLIGHT.md`](apps/ios/TESTFLIGHT.md).
+
 ## 3. Website (optional, to send scans to the browser)
 
 ```bash
