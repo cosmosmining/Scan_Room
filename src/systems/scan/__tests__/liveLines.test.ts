@@ -150,6 +150,36 @@ describe('the lines the scan draws: the room as it really is', () => {
     expect(pillar.slice(32 + 4, 32 + 8).every((l) => l.a.y === 2700)).toBe(true);
   });
 
+  it('before the room is walked round, the open side is not drawn — only the walls seen', () => {
+    const wall = (i: number) => ({ a: RECT[i], b: RECT[(i + 1) % 4] });
+    for (const seen of [[0, 1, 2], [0, 1], [1, 3]]) {
+      const walls = seen.map(wall);
+      const outline = analyseWalls(walls.map((w) => ({ ...w, heightMm: 2700, topMm: 2700 }))).outline;
+      const lines = buildLiveLines({
+        polygon: outline, walls, ceiling: 2700, zones: [], pillars: [],
+        // A door on the wall not yet scanned: not drawn either.
+        openings: [{ center: { x: 0, z: 2500 }, width: 900, bottom: 0, top: 2100, type: 'door' }],
+      });
+      expect(of(lines, 'floor'), `seen ${seen}`).toHaveLength(seen.length);
+      for (const i of seen) {
+        const { a, b } = wall(i);
+        expect(has(lines, 'floor', p3(a.x, 0, a.z), p3(b.x, 0, b.z), 1), `seen ${seen}, wall ${i}`).toBe(true);
+      }
+      // Nothing along the wall not yet seen (x = 0), and nothing across the room.
+      const onMissing = (l: LiveLine) => Math.abs(l.a.x) < 1 && Math.abs(l.b.x) < 1 && Math.abs(l.a.z - l.b.z) > 1;
+      if (!seen.includes(3)) expect(lines.filter((l) => l.kind === 'floor' && onMissing(l))).toHaveLength(0);
+      expect(of(lines, 'door'), `seen ${seen}`).toHaveLength(seen.includes(3) ? 3 : 0);
+      for (const l of of(lines, 'floor')) {
+        const onAWall = [0, 1, 2, 3].some((i) => {
+          const { a, b } = wall(i);
+          const d = (q: P3) => Math.abs((b.x - a.x) * (q.z - a.z) - (b.z - a.z) * (q.x - a.x)) / Math.hypot(b.x - a.x, b.z - a.z);
+          return d(l.a) < 1 && d(l.b) < 1;
+        });
+        expect(onAWall, `seen ${seen}: ${JSON.stringify(l)}`).toBe(true);
+      }
+    }
+  });
+
   it('either winding draws the same room', () => {
     const r = room({
       zones: [{ polygon: L_BULKHEAD, height: 2350 }],

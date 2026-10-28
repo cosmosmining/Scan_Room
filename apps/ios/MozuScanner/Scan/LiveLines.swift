@@ -73,9 +73,20 @@ enum LiveLines {
         var height: Double
     }
 
+    /// A wall actually seen, by its two ends.
+    struct Seen: Codable {
+        var a: Vec2
+        var b: Vec2
+    }
+
     struct Room: Codable {
         /// The outline, either winding.
         var polygon: [Vec2]
+        /// The walls actually seen. The outline is always closed — before the
+        /// last wall has been scanned it closes straight across the gap — so an
+        /// edge with no seen wall along it is a guess, and is not drawn. Nil:
+        /// all are drawn.
+        var walls: [Seen]?
         /// The main ceiling, mm above the floor.
         var ceiling: Double
         var zones: [Zone]
@@ -102,6 +113,13 @@ enum LiveLines {
     static let doorReachMm = 600.0
     /// Sides of the circle a round column is drawn with.
     static let circleSegments = 16
+    /// A seen wall this close to an edge's line, and this near parallel, lies along it.
+    static let supportMm = 250.0
+    static let supportDeg = 10.0
+    /// An edge is seen when walls lie along this much of it (or the share
+    /// below, if less).
+    static let supportLengthMm = 600.0
+    static let supportShare = 0.3
 
     private static func dist(_ a: Vec2, _ b: Vec2) -> Double {
         let dx: Double = a.x - b.x
@@ -271,6 +289,42 @@ enum LiveLines {
             return -1
         }
 
+        /// Is there a seen wall along edge i — or is it the outline closing a gap?
+        let minCos: Double = cos(supportDeg * Double.pi / 180)
+        let seen: [Bool] = (0..<n).map { (i: Int) -> Bool in
+            guard let walls = room.walls else { return true }
+            let a = poly[i]
+            let b = poly[(i + 1) % n]
+            let L: Double = dist(a, b)
+            let dir = Vec2(x: (b.x - a.x) / L, z: (b.z - a.z) / L)
+            var spans: [(Double, Double)] = []
+            for w in walls {
+                let wl: Double = dist(w.a, w.b)
+                if wl < 1 { continue }
+                let ux: Double = (w.b.x - w.a.x) / wl
+                let uz: Double = (w.b.z - w.a.z) / wl
+                let along: Double = abs(ux * dir.x + uz * dir.z)
+                if along < minCos { continue }
+                let offA: Double = abs((w.a.x - a.x) * dir.z - (w.a.z - a.z) * dir.x)
+                let offB: Double = abs((w.b.x - a.x) * dir.z - (w.b.z - a.z) * dir.x)
+                if max(offA, offB) > supportMm { continue }
+                let t0: Double = (w.a.x - a.x) * dir.x + (w.a.z - a.z) * dir.z
+                let t1: Double = (w.b.x - a.x) * dir.x + (w.b.z - a.z) * dir.z
+                let lo: Double = max(0, min(t0, t1))
+                let hi: Double = min(L, max(t0, t1))
+                if hi > lo { spans.append((lo, hi)) }
+            }
+            spans.sort { ($0.0, $0.1) < ($1.0, $1.1) }
+            var covered = 0.0
+            var end = -Double.infinity
+            for (lo, hi) in spans {
+                if hi <= end { continue }
+                covered += hi - max(lo, end)
+                end = hi
+            }
+            return covered >= min(supportLengthMm, supportShare * L)
+        }
+
         var lines: [Line] = []
         var runsOf: [[Run]] = []
 
@@ -281,7 +335,7 @@ enum LiveLines {
             let L = dist(a, b)
             let dir = Vec2(x: (b.x - a.x) / L, z: (b.z - a.z) / L)
             let inward = Vec2(x: -dir.z * sign, z: dir.x * sign)
-            lines.append(Line(a: at(a, 0), b: at(b, 0), kind: .floor))
+            if seen[i] { lines.append(Line(a: at(a, 0), b: at(b, 0), kind: .floor)) }
 
             // Where a bulkhead's outline meets this wall, its top may step.
             var ts: [Double] = [0, L]
@@ -307,6 +361,7 @@ enum LiveLines {
             }
             let runs = mergeRuns(raw)
             runsOf.append(runs)
+            if !seen[i] { continue }
             func along(_ t: Double) -> Vec2 { Vec2(x: a.x + dir.x * t, z: a.z + dir.z * t) }
             for (k, r) in runs.enumerated() {
                 lines.append(Line(a: at(along(r.t0), r.h), b: at(along(r.t1), r.h), kind: .ceiling))
@@ -318,8 +373,10 @@ enum LiveLines {
             }
         }
 
-        // Corners, floor to wherever the walls meet the ceiling.
+        // Corners, floor to wherever the walls meet the ceiling — where a seen
+        // wall ends.
         for i in 0..<n {
+            if !seen[i] && !seen[(i - 1 + n) % n] { continue }
             let before = runsOf[(i - 1 + n) % n]
             let top = max(before[before.count - 1].h, runsOf[i][0].h)
             lines.append(Line(a: at(poly[i], 0), b: at(poly[i], top), kind: .corner))
@@ -376,7 +433,7 @@ enum LiveLines {
                     wall = i
                 }
             }
-            if wall < 0 || best > openingReachMm { continue }
+            if wall < 0 || best > openingReachMm || !seen[wall] { continue }
             let a = poly[wall]
             let b = poly[(wall + 1) % n]
             let L: Double = dist(a, b)

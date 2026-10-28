@@ -181,7 +181,17 @@ function liveRooms(rnd: () => number, measured: { polygon: P[]; zones: { polygon
       openings = openings.map((o) => ({ ...o, center: turn(o.center, deg) }));
       pillars = pillars.map((c) => ({ ...c, center: turn(c.center, deg), rotation: c.rotation + (deg * Math.PI) / 180 }));
     }
-    out.push({ polygon: k % 5 === 4 ? [...polygon].reverse() : polygon, ceiling: H, zones, openings, pillars });
+    // The walls seen: all of them a little short of the corners, one missing,
+    // or none given (everything drawn).
+    const edges = polygon.map((a, i) => {
+      const b = polygon[(i + 1) % polygon.length];
+      const L = Math.hypot(b.x - a.x, b.z - a.z);
+      const u = { x: (b.x - a.x) / L, z: (b.z - a.z) / L };
+      const cut = Math.min(150, L / 4);
+      return { a: { x: a.x + u.x * cut, z: a.z + u.z * cut }, b: { x: b.x - u.x * cut, z: b.z - u.z * cut } };
+    });
+    const walls = k % 3 === 0 ? edges : k % 3 === 1 ? edges.filter((_, i) => i !== k % edges.length) : undefined;
+    out.push({ polygon: k % 5 === 4 ? [...polygon].reverse() : polygon, ...(walls ? { walls } : {}), ceiling: H, zones, openings, pillars });
   }
   for (const m of measured) out.push({ polygon: m.polygon, ceiling: m.height, zones: m.zones, openings: [], pillars: [] });
   return out;

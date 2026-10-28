@@ -504,8 +504,11 @@ final class RoomCaptureController: ObservableObject {
                 }
                 return LiveLines.Zone(polygon: outline, height: z.values[2])
             }
+        // Only the walls RoomPlan has actually seen are drawn: until the room
+        // is walked round, the outline closes across the gap with a guess.
+        let seenWalls: [LiveLines.Seen] = segments.map { LiveLines.Seen(a: $0.a, b: $0.b) }
         let lines = LiveLines.build(LiveLines.Room(
-            polygon: polygon, ceiling: ceiling, zones: zones, openings: openings, pillars: pillars
+            polygon: polygon, walls: seenWalls, ceiling: ceiling, zones: zones, openings: openings, pillars: pillars
         ))
         publishSteadyLines(lines, floorY: floorY)
     }

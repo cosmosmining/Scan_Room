@@ -72,6 +72,12 @@ export interface LiveZone {
 export interface LiveRoom {
   /** The outline, either winding. */
   polygon: P[];
+  /**
+   * The walls actually seen. The outline is always closed — before the last
+   * wall has been scanned it closes straight across the gap — so an edge with
+   * no seen wall along it is a guess, and is not drawn. Absent: all are drawn.
+   */
+  walls?: { a: P; b: P }[];
   /** The main ceiling, mm above the floor. */
   ceiling: number;
   zones: LiveZone[];
@@ -98,6 +104,12 @@ export interface LiveLineOptions {
   doorReachMm?: number;
   /** Sides of the circle a round column is drawn with. */
   circleSegments?: number;
+  /** A seen wall this close to an edge's line, and this near parallel, lies along it. */
+  supportMm?: number;
+  supportDeg?: number;
+  /** An edge is seen when walls lie along this much of it (or the share below, if less). */
+  supportLengthMm?: number;
+  supportShare?: number;
 }
 
 export const LIVE_LINE_DEFAULTS: Required<LiveLineOptions> = {
@@ -110,6 +122,10 @@ export const LIVE_LINE_DEFAULTS: Required<LiveLineOptions> = {
   minOpeningMm: 100,
   doorReachMm: 600,
   circleSegments: 16,
+  supportMm: 250,
+  supportDeg: 10,
+  supportLengthMm: 600,
+  supportShare: 0.3,
 };
 
 const dist = (a: P, b: P): number => Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z));
@@ -258,6 +274,39 @@ export function buildLiveLines(room: LiveRoom, options: LiveLineOptions = {}): L
     return -1;
   };
 
+  /** Is there a seen wall along edge i — or is it the outline closing a gap? */
+  const minCos = Math.cos((o.supportDeg * Math.PI) / 180);
+  const seen = poly.map((a, i) => {
+    if (!room.walls) return true;
+    const b = poly[(i + 1) % n];
+    const L = dist(a, b);
+    const dir = { x: (b.x - a.x) / L, z: (b.z - a.z) / L };
+    const spans: [number, number][] = [];
+    for (const w of room.walls) {
+      const wl = dist(w.a, w.b);
+      if (wl < 1) continue;
+      const along = Math.abs(((w.b.x - w.a.x) / wl) * dir.x + ((w.b.z - w.a.z) / wl) * dir.z);
+      if (along < minCos) continue;
+      const offA = Math.abs((w.a.x - a.x) * dir.z - (w.a.z - a.z) * dir.x);
+      const offB = Math.abs((w.b.x - a.x) * dir.z - (w.b.z - a.z) * dir.x);
+      if (Math.max(offA, offB) > o.supportMm) continue;
+      const t0 = (w.a.x - a.x) * dir.x + (w.a.z - a.z) * dir.z;
+      const t1 = (w.b.x - a.x) * dir.x + (w.b.z - a.z) * dir.z;
+      const lo = Math.max(0, Math.min(t0, t1));
+      const hi = Math.min(L, Math.max(t0, t1));
+      if (hi > lo) spans.push([lo, hi]);
+    }
+    spans.sort((u, v) => u[0] - v[0] || u[1] - v[1]);
+    let covered = 0;
+    let end = -Infinity;
+    for (const [lo, hi] of spans) {
+      if (hi <= end) continue;
+      covered += hi - Math.max(lo, end);
+      end = hi;
+    }
+    return covered >= Math.min(o.supportLengthMm, o.supportShare * L);
+  });
+
   const lines: LiveLine[] = [];
   const runsOf: Run[][] = [];
 
@@ -268,7 +317,7 @@ export function buildLiveLines(room: LiveRoom, options: LiveLineOptions = {}): L
     const L = dist(a, b);
     const dir = { x: (b.x - a.x) / L, z: (b.z - a.z) / L };
     const inward = { x: -dir.z * sign, z: dir.x * sign };
-    lines.push({ a: at(a, 0), b: at(b, 0), kind: 'floor' });
+    if (seen[i]) lines.push({ a: at(a, 0), b: at(b, 0), kind: 'floor' });
 
     // Where a bulkhead's outline meets this wall, its top may step.
     const ts = [0, L];
@@ -293,6 +342,7 @@ export function buildLiveLines(room: LiveRoom, options: LiveLineOptions = {}): L
     }
     const runs = mergeRuns(raw, o.minStepMm, o.minRunMm);
     runsOf.push(runs);
+    if (!seen[i]) continue;
     const along = (t: number): P => ({ x: a.x + dir.x * t, z: a.z + dir.z * t });
     runs.forEach((r, k) => {
       lines.push({ a: at(along(r.t0), r.h), b: at(along(r.t1), r.h), kind: 'ceiling' });
@@ -304,8 +354,9 @@ export function buildLiveLines(room: LiveRoom, options: LiveLineOptions = {}): L
     });
   }
 
-  // Corners, floor to wherever the walls meet the ceiling.
+  // Corners, floor to wherever the walls meet the ceiling — where a seen wall ends.
   for (let i = 0; i < n; i++) {
+    if (!seen[i] && !seen[(i - 1 + n) % n]) continue;
     const before = runsOf[(i - 1 + n) % n];
     const top = Math.max(before[before.length - 1].h, runsOf[i][0].h);
     lines.push({ a: at(poly[i], 0), b: at(poly[i], top), kind: 'corner' });
@@ -356,7 +407,7 @@ export function buildLiveLines(room: LiveRoom, options: LiveLineOptions = {}): L
         wall = i;
       }
     }
-    if (wall < 0 || best > o.openingReachMm) continue;
+    if (wall < 0 || best > o.openingReachMm || !seen[wall]) continue;
     const a = poly[wall];
     const b = poly[(wall + 1) % n];
     const L = dist(a, b);
